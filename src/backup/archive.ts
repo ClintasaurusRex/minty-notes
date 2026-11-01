@@ -286,6 +286,28 @@ function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
 }
 
 /**
+ * Known version-1 defect: deleting a section or notebook left its trashed pages
+ * pointing at the missing section, and such backups were rejected. Those pages
+ * (only trashed ones) are moved to the Inbox — where restoring from Trash would
+ * have put them anyway. A live page with a missing section is still an error.
+ */
+function repairVersion1(raw: unknown, warnings: string[]): void {
+  if (!isObj(raw) || !Array.isArray(raw.pages) || !Array.isArray(raw.sections)) return
+  const sectionIds = new Set(raw.sections.filter(isObj).map((s) => s.id))
+  let repaired = 0
+  raw.pages = raw.pages.map((p: unknown) => {
+    if (isObj(p) && isTime(p.trashedAt) && isObj(p.location) && p.location.kind === 'section' && !sectionIds.has(p.location.sectionId)) {
+      repaired++
+      return { ...p, location: { kind: 'inbox' } }
+    }
+    return p
+  })
+  if (repaired > 0) {
+    warnings.push(`${repaired} page${repaired === 1 ? '' : 's'} in the Trash belonged to a deleted section and will be kept in the Trash with the Inbox as ${repaired === 1 ? 'its' : 'their'} location.`)
+  }
+}
+
+/**
  * Fully validate an archive before anything is replaced: structure, version,
  * checksums, record shapes, rich text, and every relationship.
  */
@@ -316,6 +338,7 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
   const raw = parseJson(recordBytes, 'records.json', errors)
   if (errors.length) return { ok: false, errors }
 
+  if (m.formatVersion === 1) repairVersion1(raw, warnings)
   const checker = new Checker(errors)
   const records = validateRecords(raw, checker)
   if (!records) return { ok: false, errors }

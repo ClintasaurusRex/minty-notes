@@ -1,10 +1,11 @@
 import { BackupService } from '../backup/backupService'
 import { saveBytesAsDownload } from '../platform/download'
-import { EditorLock } from '../platform/editorLock'
+import { EditorLock, type HandoverResult } from '../platform/editorLock'
 import { registerServiceWorker } from '../platform/serviceWorker'
 import { requestPersistentStorage } from '../platform/storageInfo'
 import { IdbRepository } from '../storage/repository'
 import { WorkspaceStore } from '../store/workspaceStore'
+import { notify } from '../ui/notices'
 import { AttachmentUrls } from './attachmentUrls'
 
 export interface Services {
@@ -12,6 +13,8 @@ export interface Services {
   backup: BackupService
   lock: EditorLock
   attachments: AttachmentUrls
+  /** Become the editing window (asks another editor window to hand over first). */
+  takeOverEditing: () => Promise<HandoverResult>
   /** Set when another window upgraded the database; this window must reload. */
   onBlocked: (listener: () => void) => () => void
 }
@@ -42,27 +45,56 @@ export async function createServices(): Promise<Services> {
   let remoteReload: ReturnType<typeof setTimeout> | null = null
   const lock = new EditorLock({
     beforeRelease: async () => {
-      await store.flush()
-      store.setReadOnly(true)
-      backup.stop()
+      // Freezes edits and saves; refuses (and keeps editing) if saving fails.
+      const result = await store.releaseOwnership()
+      if (result.ok) backup.stop()
+      return result
     },
     afterAcquire: async () => {
-      await store.load()
-      store.setReadOnly(false)
+      // Claims storage ownership, reloads, then saves any changes held here.
+      await store.becomeEditor()
       await backup.init()
       backup.start()
+    },
+    onLost: () => {
+      // Stolen by another window: stop writes, retries, and backups right away.
+      store.revokeOwnership()
+      backup.stop()
     },
     onRemoteSave: () => {
       // Read-only windows follow the editor window's saved data.
       if (remoteReload) clearTimeout(remoteReload)
       remoteReload = setTimeout(() => void store.load(), 300)
     },
+    onRefused: (reason) => {
+      notify('info', `Another window asked to edit. This window kept editing because its latest changes could not be saved yet (${reason}).`)
+    },
   })
 
   const lockState = await lock.start()
-  store.setReadOnly(lockState === 'read-only')
+  if (lockState === 'read-only') store.revokeOwnership()
+  else await store.becomeEditor()
   await backup.init()
   if (lockState !== 'read-only') backup.start()
+
+  // Storage can also revoke ownership (another window claimed it); stop backups then.
+  store.subscribe(() => {
+    if (!store.getState().owner) backup.stop()
+  })
+
+  const takeOverEditing = async (): Promise<HandoverResult> => {
+    // Still holding the lock but storage ownership was lost: just reclaim it.
+    if (lock.getState() === 'editor' && !store.getState().owner) {
+      try {
+        await store.becomeEditor()
+        backup.start()
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) }
+      }
+    }
+    return lock.takeOver()
+  }
 
   let lastSavedAt = store.getState().save.lastSavedAt
   store.subscribe(() => {
@@ -95,6 +127,7 @@ export async function createServices(): Promise<Services> {
     backup,
     lock,
     attachments,
+    takeOverEditing,
     onBlocked: (l) => {
       blockedListeners.add(l)
       return () => blockedListeners.delete(l)

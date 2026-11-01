@@ -36,10 +36,30 @@ export const SETTINGS = {
   backupStatus: 'backupStatus',
   ui: 'ui',
   safeguard: 'safeguard',
+  editorOwner: 'editorOwner',
 } as const
 
 export interface Activity {
   lastChangeAt: string | null
+  /**
+   * Increases by one with every committed change (and restore). Backups record
+   * the revision they captured, so "has this been backed up?" never depends on clocks.
+   */
+  revision: number
+}
+
+/** The window currently allowed to write records (a fencing token). */
+export interface EditorOwner {
+  token: string
+  at: string
+}
+
+/** A write was refused because another window has taken over editing. */
+export class OwnershipError extends Error {
+  constructor() {
+    super('Another Minty Notes window has taken over editing, so this window can no longer save.')
+    this.name = 'OwnershipError'
+  }
 }
 
 export interface WorkspaceIndex {
@@ -58,16 +78,22 @@ export interface WorkspaceIndex {
 export interface Repository {
   loadIndex(): Promise<WorkspaceIndex>
   loadPageObjects(pageId: string): Promise<CanvasObject[]>
-  /** Atomically write a set of record changes and update the activity timestamp. */
-  commit(changes: ChangeSet, at: string): Promise<void>
+  /**
+   * Atomically write record changes and bump the revision, but only if `token`
+   * still owns the workspace. Returns the new revision; throws OwnershipError otherwise.
+   */
+  commit(changes: ChangeSet, at: string, token: string | null): Promise<number>
+  /** Make `token` the only writer; earlier owners' commits are refused from now on. */
+  claimOwnership(token: string): Promise<void>
   putAttachment(meta: AttachmentMeta, blob: Blob): Promise<void>
   getBlob(id: string): Promise<Blob | undefined>
   getSetting<T>(key: string): Promise<T | undefined>
   setSetting(key: string, value: unknown): Promise<void>
   deleteSetting(key: string): Promise<void>
-  readAll(): Promise<{ records: WorkspaceRecords; blobs: Map<string, Blob> }>
-  /** Replace every workspace record in one transaction. Device settings are kept. */
-  replaceAll(records: WorkspaceRecords, blobs: Map<string, Blob>): Promise<void>
+  /** Every record, attachment bytes, and the revision they represent (one snapshot). */
+  readAll(): Promise<{ records: WorkspaceRecords; blobs: Map<string, Blob>; revision: number }>
+  /** Replace every workspace record in one transaction (owner only). Device settings are kept. */
+  replaceAll(records: WorkspaceRecords, blobs: Map<string, Blob>, token: string | null): Promise<number>
   close(): void
 }
 
@@ -96,16 +122,27 @@ export class IdbRepository implements Repository {
       tx.objectStore('settings').get(SETTINGS.activity) as Promise<Activity | undefined>,
     ])
     await tx.done
-    return { workspace, notebooks, sections, pages, attachments, activity: activity ?? { lastChangeAt: null } }
+    return { workspace, notebooks, sections, pages, attachments, activity: normalizeActivity(activity) }
   }
 
   loadPageObjects(pageId: string): Promise<CanvasObject[]> {
     return this.db.getAllFromIndex('objects', 'byPage', pageId)
   }
 
-  async commit(changes: ChangeSet, at: string): Promise<void> {
+  async commit(changes: ChangeSet, at: string, token: string | null): Promise<number> {
     const stores: (RecordStoreName | 'settings')[] = ['notebooks', 'sections', 'pages', 'objects', 'settings']
     const tx = this.db.transaction(stores, 'readwrite')
+    const settings = tx.objectStore('settings')
+    // Fencing check and revision read happen in the same transaction as the writes.
+    const [owner, activity] = await Promise.all([
+      settings.get(SETTINGS.editorOwner) as Promise<EditorOwner | undefined>,
+      settings.get(SETTINGS.activity) as Promise<Partial<Activity> | undefined>,
+    ])
+    if (owner && owner.token !== token) {
+      tx.abort()
+      await tx.done.catch(() => undefined)
+      throw new OwnershipError()
+    }
     const ops: Promise<unknown>[] = []
     const apply = <T extends { id: string }>(name: RecordStoreName, map: Map<string, T | null>) => {
       const store = tx.objectStore(name)
@@ -117,8 +154,14 @@ export class IdbRepository implements Repository {
     apply('sections', changes.sections)
     apply('pages', changes.pages)
     apply('objects', changes.objects)
-    ops.push(tx.objectStore('settings').put({ lastChangeAt: at } satisfies Activity, SETTINGS.activity))
+    const revision = normalizeActivity(activity).revision + 1
+    ops.push(settings.put({ lastChangeAt: at, revision } satisfies Activity, SETTINGS.activity))
     await Promise.all([...ops, tx.done])
+    return revision
+  }
+
+  async claimOwnership(token: string): Promise<void> {
+    await this.db.put('settings', { token, at: nowIso() } satisfies EditorOwner, SETTINGS.editorOwner)
   }
 
   async putAttachment(meta: AttachmentMeta, blob: Blob): Promise<void> {
@@ -142,15 +185,16 @@ export class IdbRepository implements Repository {
     await this.db.delete('settings', key)
   }
 
-  async readAll(): Promise<{ records: WorkspaceRecords; blobs: Map<string, Blob> }> {
+  async readAll(): Promise<{ records: WorkspaceRecords; blobs: Map<string, Blob>; revision: number }> {
     const tx = this.db.transaction(ALL_STORES, 'readonly')
-    const [workspace, notebooks, sections, pages, objects, attachments] = await Promise.all([
+    const [workspace, notebooks, sections, pages, objects, attachments, activity] = await Promise.all([
       tx.objectStore('settings').get(SETTINGS.workspace) as Promise<WorkspaceInfo | undefined>,
       tx.objectStore('notebooks').getAll(),
       tx.objectStore('sections').getAll(),
       tx.objectStore('pages').getAll(),
       tx.objectStore('objects').getAll(),
       tx.objectStore('attachments').getAll(),
+      tx.objectStore('settings').get(SETTINGS.activity) as Promise<Partial<Activity> | undefined>,
     ])
     const blobs = new Map<string, Blob>()
     const blobStore = tx.objectStore('blobs')
@@ -162,13 +206,23 @@ export class IdbRepository implements Repository {
     )
     await tx.done
     if (!workspace) throw new Error('Workspace information is missing.')
-    return { records: { workspace, notebooks, sections, pages, objects, attachments }, blobs }
+    return { records: { workspace, notebooks, sections, pages, objects, attachments }, blobs, revision: normalizeActivity(activity).revision }
   }
 
-  async replaceAll(records: WorkspaceRecords, blobs: Map<string, Blob>): Promise<void> {
+  async replaceAll(records: WorkspaceRecords, blobs: Map<string, Blob>, token: string | null): Promise<number> {
     const missing = records.attachments.find((a) => !blobs.has(a.id))
     if (missing) throw new Error(`Missing bytes for attachment ${missing.id}`)
     const tx = this.db.transaction(ALL_STORES, 'readwrite')
+    const settings = tx.objectStore('settings')
+    const [owner, activity] = await Promise.all([
+      settings.get(SETTINGS.editorOwner) as Promise<EditorOwner | undefined>,
+      settings.get(SETTINGS.activity) as Promise<Partial<Activity> | undefined>,
+    ])
+    if (owner && owner.token !== token) {
+      tx.abort()
+      await tx.done.catch(() => undefined)
+      throw new OwnershipError()
+    }
     const ops: Promise<unknown>[] = []
     for (const name of ['notebooks', 'sections', 'pages', 'objects', 'attachments', 'blobs'] as const) {
       ops.push(tx.objectStore(name).clear())
@@ -181,12 +235,13 @@ export class IdbRepository implements Repository {
       ops.push(tx.objectStore('attachments').put(a))
       ops.push(tx.objectStore('blobs').put(blobs.get(a.id)!, a.id))
     }
-    const settings = tx.objectStore('settings')
     ops.push(settings.put(records.workspace, SETTINGS.workspace))
     // A restore is a change: the next folder snapshot should capture it.
-    ops.push(settings.put({ lastChangeAt: nowIso() } satisfies Activity, SETTINGS.activity))
+    const revision = normalizeActivity(activity).revision + 1
+    ops.push(settings.put({ lastChangeAt: nowIso(), revision } satisfies Activity, SETTINGS.activity))
     ops.push(settings.delete(SETTINGS.ui))
     await Promise.all([...ops, tx.done])
+    return revision
   }
 
   close(): void {
@@ -194,9 +249,14 @@ export class IdbRepository implements Repository {
   }
 }
 
+function normalizeActivity(a: Partial<Activity> | undefined): Activity {
+  return { lastChangeAt: a?.lastChangeAt ?? null, revision: typeof a?.revision === 'number' ? a.revision : 0 }
+}
+
 /** Human-readable description of a storage failure. Never implies success. */
 export function describeStorageError(err: unknown): string {
   const name = err instanceof DOMException || err instanceof Error ? err.name : ''
+  if (name === 'OwnershipError') return (err as Error).message
   if (name === 'QuotaExceededError') {
     return 'The browser has run out of storage space for Minty Notes. Free up disk space or download a backup.'
   }

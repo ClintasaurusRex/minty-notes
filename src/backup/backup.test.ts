@@ -53,7 +53,7 @@ class FakeDir {
 }
 
 async function sampleWorkspace() {
-  const { store } = await freshStore()
+  const { store, repo } = await freshStore()
   const { notebook, section } = store.createNotebook('Studio 5000')
   const page = store.createPage({ kind: 'inbox' })
   const filed = store.createPage({ kind: 'section', sectionId: section.id }, 'Rack layout')
@@ -67,18 +67,25 @@ async function sampleWorkspace() {
   const image: ImageObject = { id: newId(), pageId: page.id, type: 'image', attachmentId, alt: '', x: 520, y: 160, w: 300, h: 200, z: 2, createdAt: at, updatedAt: at }
   store.addObjects(page.id, [text, image])
   await store.flush()
-  return { store, notebook, section, page, filed, text, image, attachmentId }
+  return { store, repo, notebook, section, page, filed, text, image, attachmentId }
 }
 
-function serviceFor(store: Awaited<ReturnType<typeof freshStore>>['store'], dir?: FakeDir) {
+/** A controllable monotonic clock (milliseconds). */
+function fakeClock(start = 1_000_000) {
+  let t = start
+  return { now: () => t, advance: (ms: number) => void (t += ms) }
+}
+
+function serviceFor(store: Awaited<ReturnType<typeof freshStore>>['store'], dir?: FakeDir, clock = fakeClock()) {
   const downloads: { bytes: Uint8Array; fileName: string }[] = []
   const service = new BackupService(store, {
     appVersion: 'test',
     folderSupported: true,
     pickFolder: async () => (dir ?? null) as unknown as FileSystemDirectoryHandle | null,
     download: (bytes, fileName) => downloads.push({ bytes, fileName }),
+    monotonicNow: clock.now,
   })
-  return { service, downloads }
+  return { service, downloads, clock }
 }
 
 describe('complete backup and restore', () => {
@@ -269,27 +276,121 @@ describe('backup folder snapshots (simulated directory handle)', () => {
   it('runs automatic snapshots only when changes exist and the interval has passed', async () => {
     const src = await sampleWorkspace()
     const dir = new FakeDir()
-    const { service } = serviceFor(src.store, dir)
+    const { service, clock } = serviceFor(src.store, dir)
     await service.init()
     await service.chooseFolder()
     const count = () => [...dir.files.keys()].filter(isSnapshotName).length
     expect(count()).toBe(1)
+    // Nothing changed since the snapshot: never due, however long we wait.
+    clock.advance(service.intervalMs * 5)
     expect(service.isDue()).toBe(false)
 
     src.store.renamePage(src.page.id, 'Changed')
     await src.store.flush()
-    const last = Date.parse(service.getState().status.lastBackup!.at)
-    expect(service.isDue(last + 60_000)).toBe(false)
-    expect(service.isDue(last + service.intervalMs + 1)).toBe(true)
-    await service.tick(last + service.intervalMs + 1)
+    clock.advance(-service.intervalMs * 5) // back to the snapshot moment
+    clock.advance(60_000)
+    expect(service.isDue()).toBe(false)
+    clock.advance(service.intervalMs)
+    expect(service.isDue()).toBe(true)
+    await service.tick()
     expect(count()).toBe(2)
+    expect(service.isDue()).toBe(false)
 
     // Read-only windows never write snapshots.
     src.store.renamePage(src.page.id, 'Changed again')
     await src.store.flush()
     src.store.setReadOnly(true)
-    await service.tick(Date.now() + service.intervalMs * 2)
+    clock.advance(service.intervalMs * 2)
+    await service.tick()
     expect(count()).toBe(2)
+    expect(await service.backupNow()).toMatchObject({ ok: false })
+  })
+})
+
+describe('backup revision tracking (clock-independent)', () => {
+  async function connected() {
+    const src = await sampleWorkspace()
+    const dir = new FakeDir()
+    const svc = serviceFor(src.store, dir)
+    await svc.service.init()
+    await svc.service.chooseFolder()
+    return { ...src, dir, ...svc }
+  }
+
+  it('records the exact revision captured by each snapshot', async () => {
+    const { store, service } = await connected()
+    const revision = store.getState().data.revision
+    expect(revision).toBeGreaterThan(0)
+    expect(service.getState().status.lastBackup?.revision).toBe(revision)
+    expect(service.hasUnbackedChanges()).toBe(false)
+  })
+
+  it('detects a change saved in the same millisecond as the snapshot', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-11-01T12:00:00.000Z'))
+      const { store, page, service, clock } = await connected()
+      const snapshotAt = service.getState().status.lastBackup!.at
+      store.renamePage(page.id, 'Edited at the same instant')
+      await store.flush()
+      expect(store.getState().data.lastChangeAt).toBe(snapshotAt) // identical timestamps
+      expect(service.hasUnbackedChanges()).toBe(true)
+      clock.advance(service.intervalMs)
+      expect(service.isDue()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('is not fooled by system clock changes', async () => {
+    const { store, page, service, clock } = await connected()
+    store.renamePage(page.id, 'Changed')
+    await store.flush()
+    const at = Date.parse(service.getState().status.lastBackup!.at)
+    // Within a session the monotonic clock decides: a wall clock jump does not.
+    expect(service.isDue(at + 10 * 24 * 3600 * 1000)).toBe(false)
+    expect(service.isDue(at - 10 * 24 * 3600 * 1000)).toBe(false)
+    clock.advance(service.intervalMs)
+    expect(service.isDue(at - 10 * 24 * 3600 * 1000)).toBe(true)
+
+    // A new session only has wall time; a clock set backwards counts as due.
+    const reopened = serviceFor(store, undefined, fakeClock())
+    await reopened.service.init()
+    expect(reopened.service.isDue(at + 60_000)).toBe(false)
+    expect(reopened.service.isDue(at - 3600_000)).toBe(true)
+    expect(reopened.service.isDue(at + reopened.service.intervalMs)).toBe(true)
+  })
+
+  it('handles changes saved while a backup is being prepared', async () => {
+    const { store, page, service, dir, repo } = await connected()
+    const original = repo.readAll.bind(repo)
+    vi.spyOn(repo, 'readAll').mockImplementationOnce(async () => {
+      // Saved before the snapshot's read: included.
+      store.renamePage(page.id, 'Included')
+      await store.flush()
+      const result = await original()
+      // Saved after the read, while the ZIP is still being built: not included.
+      store.renamePage(page.id, 'Not included')
+      await store.flush()
+      return result
+    })
+    const result = await service.backupNow()
+    expect(result.ok).toBe(true)
+    const archive = await readArchive(dir.files.get((result as { fileName: string }).fileName)!)
+    if (!archive.ok) throw new Error(archive.errors.join())
+    expect(archive.records.pages.find((p) => p.id === page.id)?.title).toBe('Included')
+    // The later change is still pending backup, by revision.
+    expect(service.getState().status.lastBackup!.revision).toBe(store.getState().data.revision - 1)
+    expect(service.hasUnbackedChanges()).toBe(true)
+  })
+
+  it('treats a snapshot recorded without a revision (version 0.1.0) as not covering current data', async () => {
+    const { store, service, repo } = await connected()
+    const status = service.getState().status
+    await repo.setSetting('backupStatus', { ...status, lastBackup: { at: status.lastBackup!.at, fileName: status.lastBackup!.fileName } })
+    const reopened = serviceFor(store)
+    await reopened.service.init()
+    expect(reopened.service.hasUnbackedChanges()).toBe(true)
   })
 })
 
@@ -320,3 +421,51 @@ describe('saved folder crash guard', () => {
   })
 })
 
+
+describe('trashed pages of deleted sections (version-1 defect)', () => {
+  it('keeps the trashed page valid when its section or notebook is deleted, so backups restore', async () => {
+    const { store } = await freshStore()
+    const a = store.createNotebook('Temp A')
+    const b = store.createNotebook('Temp B')
+    const inSection = store.createPage({ kind: 'section', sectionId: a.section.id }, 'Old section page')
+    const inNotebook = store.createPage({ kind: 'section', sectionId: b.section.id }, 'Old notebook page')
+    store.trashPage(inSection.id)
+    store.trashPage(inNotebook.id)
+    expect(store.deleteSection(a.section.id)).toBe(true)
+    expect(store.deleteNotebook(b.notebook.id)).toBe(true)
+    for (const id of [inSection.id, inNotebook.id]) {
+      expect(store.getState().data.pages[id]).toMatchObject({ location: { kind: 'inbox' }, trashedAt: expect.any(String) })
+    }
+    const { bytes } = await serviceFor(store).service.createArchive()
+    const validated = await readArchive(bytes)
+    expect(validated.ok).toBe(true)
+    store.restorePage(inSection.id)
+    expect(store.getState().data.pages[inSection.id]).toMatchObject({ location: { kind: 'inbox' }, trashedAt: null })
+  })
+
+  it('restores an existing version-1 backup that contains the orphaned trashed page', async () => {
+    const src = await sampleWorkspace()
+    const { records, blobs } = await src.repo.readAll()
+    const at = nowIso()
+    const orphan = { ...records.pages[0], id: newId(), title: 'Trashed in deleted section', location: { kind: 'section' as const, sectionId: 'deleted-section' }, trashedAt: at }
+    const v1 = { ...records, pages: [...records.pages, orphan] }
+    const validated = await readArchive(await buildArchive(v1, blobs, '0.1.0'))
+    if (!validated.ok) throw new Error(validated.errors.join('\n'))
+    expect(validated.warnings.join(' ')).toMatch(/deleted section/)
+    expect(validated.records.pages.find((p) => p.id === orphan.id)?.location).toEqual({ kind: 'inbox' })
+
+    const clean = await freshStore()
+    const target = serviceFor(clean.store)
+    await target.service.init()
+    await target.service.restore(validated)
+    expect(clean.store.getState().data.pages[orphan.id]).toMatchObject({ location: { kind: 'inbox' }, trashedAt: at })
+  })
+
+  it('still rejects a live page that points at a missing section', async () => {
+    const src = await sampleWorkspace()
+    const { records, blobs } = await src.repo.readAll()
+    const broken = { ...records, pages: records.pages.map((p) => (p.location.kind === 'section' ? { ...p, location: { kind: 'section' as const, sectionId: 'gone' } } : p)) }
+    const result = await readArchive(await buildArchive(broken, blobs, 'test'))
+    expect(result).toMatchObject({ ok: false, errors: expect.arrayContaining([expect.stringMatching(/missing section/)]) })
+  })
+})

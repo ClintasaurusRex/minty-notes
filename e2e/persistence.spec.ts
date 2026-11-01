@@ -23,6 +23,98 @@ test('a second window opens read-only and can take over editing', async ({ page,
   await expect(second.locator('.obj-text')).toHaveText('Edited in window one')
 })
 
+const breakWrites = (p: Page) =>
+  p.evaluate(() => {
+    const w = window as unknown as { __put: typeof IDBObjectStore.prototype.put }
+    w.__put = IDBObjectStore.prototype.put
+    IDBObjectStore.prototype.put = function () {
+      throw new DOMException('Simulated full disk', 'QuotaExceededError')
+    }
+  })
+const fixWrites = (p: Page) =>
+  p.evaluate(() => {
+    IDBObjectStore.prototype.put = (window as unknown as { __put: typeof IDBObjectStore.prototype.put }).__put
+  })
+
+test('a handover is refused while the editing window cannot save, and its work is kept', async ({ page, context }) => {
+  await page.goto('/')
+  await newQuickNote(page)
+  const box = await addTextBox(page, 'Saved first')
+  await waitSaved(page)
+  await breakWrites(page)
+  await box.locator('.rt').click()
+  await page.keyboard.press('End')
+  await page.keyboard.type(' + unsaved')
+  await expect(page.getByTestId('save-status')).toHaveAttribute('data-status', 'error')
+
+  const second = await context.newPage()
+  await second.goto('/')
+  await second.getByRole('button', { name: 'Edit here instead' }).click()
+  await expect(second.getByText(/Could not start editing here/)).toBeVisible()
+  await expect(second.getByTestId('readonly-banner')).toBeVisible()
+  // The first window still edits, with its unsaved text intact.
+  await expect(page.getByTestId('readonly-banner')).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Add text box' })).toBeEnabled()
+  await expect(page.locator('.obj-text')).toHaveText('Saved first + unsaved')
+
+  // Once storage works again the change saves, and handing over loses nothing.
+  await fixWrites(page)
+  await page.getByRole('button', { name: 'Retry now' }).click()
+  await waitSaved(page)
+  await second.getByRole('button', { name: 'Edit here instead' }).click()
+  await expect(second.getByTestId('readonly-banner')).toBeHidden()
+  await expect(page.getByTestId('readonly-banner')).toBeVisible()
+  await second.getByRole('button', { name: 'Inbox' }).click()
+  await second.locator('.nav-page').first().click()
+  await expect(second.locator('.obj-text')).toHaveText('Saved first + unsaved')
+})
+
+test('a frozen editing window that loses the lock stops writing and keeps its edits aside', async ({ context }) => {
+  const a = await context.newPage()
+  // Window A cannot hear handover requests, like a frozen background tab.
+  await a.addInitScript(() => Object.defineProperty(window, 'BroadcastChannel', { value: undefined }))
+  await a.goto('/')
+  await newQuickNote(a)
+  const boxA = await addTextBox(a, 'From A')
+  await waitSaved(a)
+  await breakWrites(a)
+  await boxA.locator('.rt').click()
+  await a.keyboard.press('End')
+  await a.keyboard.type(' (held)')
+  await expect(a.getByTestId('save-status')).toHaveAttribute('data-status', 'error')
+
+  // Window B gets no answer, takes the lock after the timeout, and edits.
+  const b = await context.newPage()
+  await b.goto('/')
+  await b.getByRole('button', { name: 'Edit here instead' }).click()
+  await expect(b.getByTestId('readonly-banner')).toBeHidden({ timeout: 15_000 })
+
+  // A is now read-only everywhere, with its unsaved edit held, not written.
+  await expect(a.getByTestId('readonly-banner')).toHaveAttribute('data-held', /^[1-9]/)
+  await expect(a.getByRole('button', { name: 'Add text box' })).toBeDisabled()
+  await expect(a.locator('.obj-text .rt')).toHaveAttribute('contenteditable', 'false')
+  await fixWrites(a)
+  // Even with storage working, A's queued edits are not written (no retries, no flush on hide).
+  await a.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+  await b.getByRole('button', { name: 'Inbox' }).click()
+  await b.locator('.nav-page').first().click()
+  await expect(b.locator('.obj-text')).toHaveText('From A')
+  await addTextBox(b, 'From B')
+  await waitSaved(b)
+  await b.reload()
+  await expect(b.locator('.obj-text').first()).toHaveText('From A')
+
+  // A takes editing back on purpose: its held edit is saved on top of B's work.
+  await a.getByRole('button', { name: 'Edit here and save them' }).click()
+  await expect(a.getByTestId('readonly-banner')).toBeHidden({ timeout: 15_000 })
+  await waitSaved(a)
+  await expect(a.locator('.obj-text').filter({ hasText: 'From A (held)' })).toHaveCount(1)
+  await expect(a.locator('.obj-text').filter({ hasText: 'From B' })).toHaveCount(1)
+  await b.reload()
+  await expect(b.locator('.obj-text').filter({ hasText: 'From A (held)' })).toHaveCount(1)
+  await expect(b.locator('.obj-text').filter({ hasText: 'From B' })).toHaveCount(1)
+})
+
 test('failed writes are reported honestly, kept, and retried', async ({ page }) => {
   await page.goto('/')
   await newQuickNote(page)
@@ -83,7 +175,15 @@ test.describe('backup folder (simulated directory handle)', () => {
       const root = await navigator.storage.getDirectory()
       const dir = await root.getDirectoryHandle('Dropbox-Backups', { create: true })
       const out: { name: string; size: number }[] = []
-      for await (const [name, h] of dir.entries()) if (h.kind === 'file') out.push({ name, size: (await (h as FileSystemFileHandle).getFile()).size })
+      for await (const [name, h] of dir.entries()) {
+        // Skip Chrome's temporary swap files and entries that vanish while a write finishes.
+        if (h.kind !== 'file' || name.endsWith('.crswap')) continue
+        try {
+          out.push({ name, size: (await (h as FileSystemFileHandle).getFile()).size })
+        } catch {
+          // gone mid-listing
+        }
+      }
       return out.sort((a, b) => a.name.localeCompare(b.name))
     })
 

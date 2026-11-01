@@ -40,7 +40,14 @@ function SaveStatus() {
   const { store } = useServices()
   const save = useWorkspace((s) => s.save)
   const readOnly = useWorkspace((s) => s.readOnly)
-  if (readOnly) return <span className="pill pill-muted">Read-only</span>
+  const held = useWorkspace((s) => s.heldChanges)
+  if (readOnly) {
+    return (
+      <span className={`pill ${held > 0 ? 'pill-error' : 'pill-muted'}`} data-testid="save-status" data-status="read-only">
+        Read-only{held > 0 ? ` · ${held} unsaved` : ''}
+      </span>
+    )
+  }
   if (save.status === 'error') {
     return (
       <button type="button" className="pill pill-error" title={save.error ?? ''} onClick={() => void store.retrySave()} data-testid="save-status" data-status="error">
@@ -107,12 +114,57 @@ function Notices() {
   )
 }
 
-function Banners({ onSettings }: { onSettings: () => void }) {
-  const { lock, backup, store } = useServices()
+/** Shown whenever this window may not write. Offers taking over, and handles held changes. */
+function OwnershipBanner() {
+  const { takeOverEditing, store } = useServices()
   const lockState = useLockState()
+  const owner = useWorkspace((s) => s.owner)
+  const held = useWorkspace((s) => s.heldChanges)
+  const [busy, setBusy] = useState(false)
+  if (owner) return null
+  const waiting = busy || lockState === 'acquiring'
+  const takeOver = async () => {
+    setBusy(true)
+    const result = await takeOverEditing()
+    setBusy(false)
+    if (!result.ok) notify('error', `Could not start editing here: ${result.reason}`)
+  }
+  if (held > 0) {
+    return (
+      <div className="banner banner-error" role="alert" data-testid="readonly-banner" data-held={held}>
+        Another window took over editing before {held} change{held === 1 ? '' : 's'} in this window could be saved. {held === 1 ? 'It was' : 'They were'} not written, so the other window&apos;s work is safe.
+        <button type="button" className="btn btn-small btn-primary" disabled={waiting} onClick={() => void takeOver()}>
+          {waiting ? 'Asking the other window…' : 'Edit here and save them'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-small"
+          disabled={waiting}
+          onClick={() => {
+            if (window.confirm('Discard the changes this window could not save? This cannot be undone.')) void store.discardHeldChanges()
+          }}
+        >
+          Discard them
+        </button>
+      </div>
+    )
+  }
+  return (
+    <div className="banner" role="status" data-testid="readonly-banner">
+      Minty Notes is being edited in another window, so this window is read-only.
+      <button type="button" className="btn btn-small btn-primary" disabled={waiting} onClick={() => void takeOver()}>
+        {waiting ? 'Asking the other window…' : 'Edit here instead'}
+      </button>
+    </div>
+  )
+}
+
+function Banners({ onSettings }: { onSettings: () => void }) {
+  const { backup, store } = useServices()
   const backupState = useBackupState()
   const update = useAppUpdate()
   const save = useWorkspace((s) => s.save)
+  const owner = useWorkspace((s) => s.owner)
   const [blocked, setBlocked] = useState(false)
   const { onBlocked } = useServices()
   useEffect(() => onBlocked(() => setBlocked(true)), [onBlocked])
@@ -127,15 +179,8 @@ function Banners({ onSettings }: { onSettings: () => void }) {
           </button>
         </div>
       )}
-      {lockState === 'read-only' && (
-        <div className="banner" role="status" data-testid="readonly-banner">
-          Minty Notes is being edited in another window, so this window is read-only.
-          <button type="button" className="btn btn-small btn-primary" onClick={() => void lock.takeOver()}>
-            Edit here instead
-          </button>
-        </div>
-      )}
-      {save.status === 'error' && (
+      <OwnershipBanner />
+      {save.status === 'error' && owner && (
         <div className="banner banner-error" role="alert" data-testid="save-error-banner">
           Changes are not saved: {save.error} They are kept in this window and will be retried.
           <button type="button" className="btn btn-small" onClick={() => void store.retrySave()}>
@@ -146,7 +191,7 @@ function Banners({ onSettings }: { onSettings: () => void }) {
           </button>
         </div>
       )}
-      {lockState === 'editor' && (backupState.folderState === 'prompt' || backupState.folderState === 'denied') && (
+      {owner && (backupState.folderState === 'prompt' || backupState.folderState === 'denied') && (
         <div className="banner banner-warn" role="status" data-testid="reconnect-banner">
           Folder backups are paused: the browser needs your permission to use “{backupState.folderName}” again.
           <button

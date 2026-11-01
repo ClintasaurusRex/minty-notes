@@ -1,10 +1,10 @@
 # Minty Notes — progress
 
-Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App version 0.1.0
+Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App version 0.1.1
 
 ## Status
 
-**Stage 0 and Stage 1 are complete and checked.** Stages 2–6 have not started. Nothing has been deployed.
+**Stage 0 and Stage 1 are complete and checked, including fixes for the four defects found in the independent review of `6471133`.** Stages 2–6 have not started. Nothing has been deployed.
 
 ## Completed
 
@@ -26,6 +26,13 @@ Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App ver
 - Restore from file or from the backup folder: full validation, summary review, safety copy first, all-or-nothing replace.
 - Offline after first visit; accurate "Offline ready"; "Save and update" for new versions; installable manifest and icons; relative paths for any stable HTTPS host.
 
+### Review fixes (0.1.1)
+1. **Handover refused when work cannot be saved.** The editor freezes edits and saves before releasing; if saving fails it replies "refused", keeps the lock, and keeps editing with its changes intact. A thrown save error counts as a refusal. The requester only steals from a window that never acknowledges (frozen).
+2. **Ownership enforced everywhere.** A stolen lock (or a commit refused by storage) makes the window read-only, cancels queued saves and retries, and stops backups. Storage now checks an owner token on every commit and restore, so stale retries from an old window are refused. Unsaved changes are held in memory with a banner: "Edit here and save them" (saved on top of the latest data) or "Discard them".
+3. **Trashed pages of deleted sections.** Deleting a section/notebook moves its trashed pages' location to the Inbox. IndexedDB migration 1 → 2 repairs existing data; version-1 backups containing the orphan now restore (the page goes to the Inbox, with a warning). Live orphans are still rejected.
+4. **Backups track revisions, not timestamps.** Each commit increments a stored revision in the same transaction; each snapshot records the revision it captured, read with the archived data. The interval uses a monotonic clock within a session; a clock set backwards counts as due.
+5. Also found and fixed while testing: after taking editing back, the page could briefly reload without the edit that was mid-save (held edits are now saved before reloading, and in-flight saves are overlaid).
+
 ## Verification
 
 | Check | Result | How |
@@ -33,8 +40,8 @@ Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App ver
 | `npm ci` | ✅ | baseline at start |
 | `npm run build` (tsc + Vite) | ✅ | |
 | `npm run lint` | ✅ | |
-| `npm test` — 32 unit/integration tests | ✅ | Vitest + fake-indexeddb: geometry, autosave, failed/retried writes, undo model, archive validation (bad ZIP, wrong format, newer version, tampered records, damaged/missing images, broken links, invalid rich text, duplicates, unsafe paths), restore round trip, restore failure keeps data, snapshot retention, write failure keeps old snapshots, denied/revoked permission, auto-snapshot timing, read-only windows, crash guard |
-| `npm run test:e2e` — 13 browser tests | ✅ | Real headless Chromium against the production build (see below) |
+| `npm test` — 54 unit/integration tests | ✅ | Vitest + fake-indexeddb: geometry, autosave, failed/retried writes, undo model, archive validation (bad ZIP, wrong format, newer version, tampered records, damaged/missing images, broken links, invalid rich text, duplicates, unsafe paths), restore round trip, restore failure keeps data, snapshot retention, write failure keeps old snapshots, denied/revoked permission, read-only windows, crash guard. **Added for 0.1.1 (22):** handover refused on failed save / thrown error, successful handover, steal from a frozen editor reports loss, failed preparation gives the lock back (fake Web Locks + real Node BroadcastChannel); fencing refuses stale writes; revoking cancels retries (fake timers, no sleeps); held edits saved on take-back or discarded; trashed pages rehomed on section and notebook delete; v1 backup with orphan restores, live orphan still rejected; DB migration 1 → 2 (with and without activity); revision per commit; snapshot revision recorded; same-millisecond change; wall-clock jumps and backwards clock; changes before/after the snapshot read during preparation; 0.1.0 status without revision; deterministic auto-snapshot timing (injected monotonic clock) |
+| `npm run test:e2e` — 15 browser tests | ✅ | Real headless Chromium against the production build (see below). Added: refused handover keeps the editor's unsaved text; a frozen editor whose lock is stolen becomes read-only, holds its edit (not written even after storage recovers), and saves it on take-back without losing the other window's work |
 | Save-then-update flow | ✅ (scripted) | New build published under a running app → banner → edits typed just before updating were saved → new version loaded |
 | Heavy page timing | ✅ (scripted) | `scripts/heavy-page-check.mjs`: 85 text + 15 images open ≈ 0.53 s; keystroke ≈ 8 ms; pointer move ≈ 17 ms (4 vCPU cloud container) |
 | `npm audit --omit=dev` | ✅ 0 | 12 moderate advisories remain in dev-only lint tooling (`minimatch` via ESLint/typescript-eslint), present before this work; the only automated fix is a breaking downgrade, so left as is |
@@ -43,8 +50,8 @@ Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App ver
 Quick note in Inbox → type text and bold it → put a PNG on Chromium's real async clipboard and press Ctrl+V → drag the image and resize from a corner → file a second page in a notebook section → reload → text, image SHA-256, and geometry identical → Download backup → open a **separate clean browser context** → restore the file → text (with bold), image SHA-256, exact geometry, and the notebook › section link all match.
 
 ### Real vs. simulated
-- **Real in Chromium:** typing, selection, mouse drags, keyboard paths, clipboard paste via Chromium's async clipboard + Ctrl+V, IndexedDB persistence across reload, downloads, file-input restore, Web Locks + BroadcastChannel between two tabs, service worker caching and offline reload (`context.setOffline`), OPFS directory handles for snapshot writing.
-- **Simulated:** the folder picker (replaced with an origin-private directory handle), permission answers (`queryPermission`/`requestPermission` patched to `prompt`/`denied`/`granted`), write failures (patched `IDBObjectStore.put` and `FileSystemWritableFileStream.write`), disk-full conditions.
+- **Real in Chromium:** typing, selection, mouse drags, keyboard paths, clipboard paste via Chromium's async clipboard + Ctrl+V, IndexedDB persistence across reload, downloads, file-input restore, Web Locks (including a real lock steal) + BroadcastChannel between two tabs, service worker caching and offline reload (`context.setOffline`), OPFS directory handles for snapshot writing.
+- **Simulated:** the folder picker (replaced with an origin-private directory handle), permission answers (`queryPermission`/`requestPermission` patched to `prompt`/`denied`/`granted`), write failures (patched `IDBObjectStore.put` and `FileSystemWritableFileStream.write`), disk-full conditions, a frozen tab (that window's BroadcastChannel removed so it never answers), system clock changes (unit tests with injected clocks), and the 0.1.0 database (written with the version-1 schema in fake-indexeddb).
 - **Not verifiable here:** this container's headless Chromium closes the page whenever a stored directory handle is read back from IndexedDB, so "the chosen folder is remembered after reload/restart" could not be tested. The crash guard makes such a failure recoverable (the folder is forgotten and the user picks it again), but real Chrome behavior must be checked manually.
 
 ## Manual checks still needed (real Chrome on the work laptop)
@@ -54,8 +61,12 @@ Quick note in Inbox → type text and bold it → put a PNG on Chromium's real a
 4. Install from Chrome's address bar, then launch the installed app offline.
 5. Restore one of the real folder snapshots in a different Chrome profile.
 6. Check what Settings reports for persistent storage on that machine.
+7. Open Minty Notes in two real Chrome windows: use "Edit here instead" both ways; then leave one window in a long-idle background tab and take over from the other (real tab freezing was not reproduced here).
+8. Upgrade check: open the 0.1.0 build's existing workspace with this build (DB 1 → 2 migration in real Chrome), confirm notes and Trash are intact and a backup restores.
 
 ## Known limitations (Stage 1)
+- Held changes from a window that lost editing live only in that window's memory; closing it (after the warning) discards them. Taking editing back saves them record by record over the other window's version of the same items.
+- Opening a page can save re-measured text heights (counts as a change, so an extra snapshot may follow).
 - Undo history is per page and in memory; it is cleared on reload. Notebook/page management is not undoable (Trash covers page deletion).
 - No multi-select, alignment guides, or snapping yet. No image alt-text editor. No search, tags, projects, tasks, tables, checklists, shapes/annotation, document import, or PDF export (later stages).
 - Image bytes of deleted image objects stay stored (and in backups) until a cleanup feature exists.
@@ -67,5 +78,7 @@ Quick note in Inbox → type text and bold it → put a PNG on Chromium's real a
 
 ## Next task
 **Stage 2 — projects and reusable knowledge** (see `MINTY_NOTES_PLAN.md` and the handoff's Stage 2 prompt). Start by adding a `Project` record and `{ kind: 'project', projectId }` page location with a format/DB migration (bump `FORMAT_VERSION` to 2 with an archive migration from 1), then project details, system categories, linked reference pages, suggestions, pin/hide, project copies, tags, search, home dashboard, archive. Keep general notes fully usable and prove shared-reference vs. project-copy behavior.
+
+Note for Stage 2: adding the project location means `DB_VERSION` 3 and `FORMAT_VERSION` 2 migrations; keep the version-1 trashed-page repair in `readArchive`.
 
 Before that, do the manual checks above and fix anything they reveal in this milestone.

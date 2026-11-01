@@ -18,8 +18,12 @@ import {
 export type FolderState = 'unsupported' | 'none' | 'granted' | 'prompt' | 'denied' | 'missing'
 
 export interface BackupStatusRecord {
-  /** Last snapshot successfully written and verified in the backup folder. */
-  lastBackup: { at: string; fileName: string } | null
+  /**
+   * Last snapshot successfully written and verified in the backup folder.
+   * `revision` is the stored revision the snapshot captured; it is missing in
+   * status saved by version 0.1.0, which counts as "not known to be backed up".
+   */
+  lastBackup: { at: string; fileName: string; revision?: number } | null
   /** Last downloaded backup (the browser cannot confirm the file was kept). */
   lastDownloadAt: string | null
   lastError: { at: string; message: string } | null
@@ -63,6 +67,8 @@ export interface BackupServiceOptions {
    * read ever takes the page down, the next start skips it (no crash loop).
    */
   crashGuard?: { isSet(): boolean; set(on: boolean): void }
+  /** Monotonic clock in ms (unaffected by system clock changes); defaults to performance.now. */
+  monotonicNow?: () => number
 }
 
 const GUARD_KEY = 'minty:reading-backup-folder'
@@ -103,6 +109,8 @@ export class BackupService {
   private folder: FolderRecord | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private lastErrorAt = 0
+  /** Monotonic time of the last successful snapshot in this session. */
+  private lastBackupMono: number | null = null
 
   constructor(store: WorkspaceStore, options: BackupServiceOptions) {
     this.store = store
@@ -112,6 +120,7 @@ export class BackupService {
       pickFolder,
       folderSupported: isFolderBackupSupported(),
       crashGuard: sessionCrashGuard,
+      monotonicNow: () => performance.now(),
       download: () => {
         throw new Error('Downloads are not available here.')
       },
@@ -248,19 +257,23 @@ export class BackupService {
     this.set({ folderName: null, folderState: this.opts.folderSupported ? 'none' : 'unsupported' })
   }
 
-  /** Save pending edits, then build a complete archive from stored data. */
-  async createArchive(): Promise<{ bytes: Uint8Array; at: string }> {
+  /**
+   * Save pending edits, then build a complete archive from one consistent read
+   * of storage. `revision` is exactly the stored revision the archive contains.
+   */
+  async createArchive(): Promise<{ bytes: Uint8Array; at: string; revision: number }> {
     const saved = await this.store.flush()
     if (!saved) throw new Error('Recent changes could not be saved, so a backup now would be incomplete. Resolve the save error and try again.')
+    const { records, blobs, revision } = await this.repo.readAll()
     const at = new Date().toISOString()
-    const { records, blobs } = await this.repo.readAll()
-    return { bytes: await buildArchive(records, blobs, this.opts.appVersion), at }
+    return { bytes: await buildArchive(records, blobs, this.opts.appVersion), at, revision }
   }
 
   /** Write a verified snapshot to the backup folder and prune old ones afterwards. */
   async backupNow(): Promise<BackupResult> {
     if (this.state.running) return { ok: false, message: 'Another backup task is already running.' }
     if (!this.folder) return { ok: false, message: 'No backup folder is selected.' }
+    if (this.store.getState().readOnly) return { ok: false, message: 'Only the window that is editing writes folder backups.' }
     this.set({ running: 'backup' })
     try {
       const permission = await queryFolderPermission(this.folder.handle)
@@ -270,10 +283,11 @@ export class BackupService {
         await this.recordError(message)
         return { ok: false, message }
       }
-      const { bytes, at } = await this.createArchive()
+      const { bytes, at, revision } = await this.createArchive()
       const fileName = await writeFolderFile(this.folder.handle, snapshotFileName(new Date(at)), bytes)
       await pruneSnapshots(this.folder.handle, this.opts.keep, fileName)
-      await this.saveStatus({ ...this.state.status, lastBackup: { at, fileName }, lastError: null })
+      this.lastBackupMono = this.opts.monotonicNow()
+      await this.saveStatus({ ...this.state.status, lastBackup: { at, fileName, revision }, lastError: null })
       return { ok: true, fileName }
     } catch (err) {
       const message = err instanceof Error && err.message.startsWith('Recent changes') ? err.message : describeFolderError(err)
@@ -305,14 +319,25 @@ export class BackupService {
     }
   }
 
-  /** True when the folder is usable, changes exist since the last snapshot, and the interval has passed. */
+  /** True when stored changes exist that no snapshot has captured. Clock-independent. */
+  hasUnbackedChanges(): boolean {
+    const revision = this.store.getState().data.revision
+    const last = this.state.status.lastBackup
+    if (!last) return revision > 0
+    return last.revision !== revision
+  }
+
+  /**
+   * True when changes exist since the last snapshot and the interval has passed.
+   * Within a session the interval uses a monotonic clock; across restarts it uses
+   * the wall clock, and a clock that moved backwards counts as "due".
+   */
   isDue(now = Date.now()): boolean {
-    const change = this.store.getState().data.lastChangeAt
-    const last = this.state.status.lastBackup?.at
-    if (!change) return false
-    if (last && Date.parse(change) <= Date.parse(last)) return false
+    if (!this.hasUnbackedChanges()) return false
+    const last = this.state.status.lastBackup
     if (!last) return true
-    return now - Date.parse(last) >= this.opts.intervalMs
+    const elapsed = this.lastBackupMono !== null ? this.opts.monotonicNow() - this.lastBackupMono : now - Date.parse(last.at)
+    return Number.isNaN(elapsed) || elapsed < 0 || elapsed >= this.opts.intervalMs
   }
 
   /** Periodic check while the app is open. */
@@ -372,8 +397,7 @@ export class BackupService {
       }
       this.set({ safeguard: { createdAt: at, fileName, size: safeguard.size, folderFileName } })
 
-      await this.repo.replaceAll(validated.records, validated.blobs)
-      await this.store.load()
+      await this.store.replaceWorkspace(validated.records, validated.blobs)
       this.opts.onRestored?.()
     } finally {
       this.set({ running: null })

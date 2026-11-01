@@ -62,19 +62,24 @@ The UI never touches IndexedDB directly. A future desktop shell can replace `Rep
 
 ## Storage and saving
 
-- IndexedDB database `minty-notes` (schema version 1): `notebooks`, `sections`, `pages`, `objects`, `attachments` (metadata), `blobs` (bytes), `settings`. See `DATA_FORMAT.md`.
+- IndexedDB database `minty-notes` (schema version 2): `notebooks`, `sections`, `pages`, `objects`, `attachments` (metadata), `blobs` (bytes), `settings`. See `DATA_FORMAT.md`.
 - `WorkspaceStore` applies edits in memory and marks records dirty. Saves are debounced (400 ms, max 2 s) and written in **one transaction**; flush also runs on tab hide/close.
 - Status is honest: `Unsaved changes` → `Saving…` → `Saved`, or `Not saved — retry` with a banner. A failed batch stays queued (newer edits win) and retries with backoff (1 s, 3 s, 10 s, 30 s). Quota errors get a specific message. A page-close warning appears if anything is unsaved.
 - Image bytes are stored **before** any object references them; deleting an image object keeps its bytes so undo works.
 - Persistent storage is requested at start; Settings reports the browser's actual answer and usage/quota.
-- Single editor: the first window takes a Web Lock (`minty-notes:editor`); later windows open read-only and follow saved changes. "Edit here instead" asks the editor window (BroadcastChannel) to save and release; after 3 s it steals the lock. The new editor reloads from storage before editing.
+- Single editor, enforced in three places:
+  1. **Web Lock** (`minty-notes:editor`): the first window edits; later windows open read-only and follow saved changes.
+  2. **Handover protocol** (BroadcastChannel): "Edit here instead" sends `takeover`; the editor replies `takeover-ack`, freezes edits, and saves. Only if everything saved does it release the lock; otherwise it replies `takeover-refused` and **keeps editing with its unsaved work**. The requester steals the lock only when no acknowledgement arrives within 3 s (a frozen window); an acknowledged editor gets up to 20 s.
+  3. **Storage fencing**: each new editor writes a random owner token (`editorOwner`); every commit and restore checks it in the same transaction. A window that lost the lock — or a frozen one that wakes up — can never overwrite the new editor's work.
+- Losing editing (lock stolen, or a commit refused by fencing) immediately makes the window read-only, cancels queued saves and retries, and stops backups. Unsaved changes are **held in memory**, counted in a banner, and written only if the user chooses "Edit here and save them" (they are saved on top of the latest data, then the window reloads) or dropped with "Discard them". The close-window warning covers held changes.
+- New editors claim the token, save held changes, then reload from storage; queued and in-flight changes are overlaid when loading so the view never shows older data than this window wrote.
 
 ## Backup and restore
 
 - Archive: ZIP with `manifest.json` (format, version, counts, SHA-256 of every file), `records.json`, `attachments/<id>.<ext>`, `README.txt`.
 - Restore validates **everything before changing anything**: ZIP structure and safe paths, size limits, format name and version (newer formats are refused), checksums, record shapes, unique IDs, every relationship, rich text against the editor schema, and attachment bytes. The user sees a summary and confirms.
 - Before replacing, the current workspace is saved as a safety copy (in IndexedDB, and in the backup folder when connected). If that fails, nothing is restored. The replacement is a single IndexedDB transaction, so a failure leaves the old workspace intact.
-- Folder snapshots (Chrome/Edge File System Access API): manual "Back up now", plus automatic snapshots every 30 minutes **while the app is open and changes exist**, checked each minute and on return to the tab. Files are written via a temporary file and only appear when complete; size is verified; the newest 10 `minty-notes-backup-*.zip` files are kept and older ones are pruned **only after** a successful write. Other files in the folder are never touched.
+- Folder snapshots (Chrome/Edge File System Access API): manual "Back up now", plus automatic snapshots every 30 minutes **while the app is open and changes exist**, checked each minute and on return to the tab. "Changes exist" compares the stored `revision` with the revision the last snapshot captured (read in the same transaction as the archived records), so equal timestamps, clock changes, or edits saved while a backup is being prepared cannot hide a change. The 30-minute interval uses a monotonic clock within a session and wall time across restarts; a clock that moved backwards counts as due. Only the editing window writes folder snapshots. Files are written via a temporary file and only appear when complete; size is verified; the newest 10 `minty-notes-backup-*.zip` files are kept and older ones are pruned **only after** a successful write. Other files in the folder are never touched.
 - Permission states (`granted`, `prompt`, `denied`, missing folder) are shown in the status pill, a banner, and Settings; "Reconnect folder" renews access with a user click. The download fallback always works.
 - Crash guard: reading the saved folder handle is bracketed by a per-tab marker; if a read ever takes the page down, the next start forgets the handle and asks the user to choose the folder again (no crash loop).
 
