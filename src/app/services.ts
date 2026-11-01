@@ -32,7 +32,11 @@ export async function createServices(): Promise<Services> {
   const backup = new BackupService(store, {
     appVersion: __APP_VERSION__,
     download: (bytes, fileName) => saveBytesAsDownload(bytes, fileName),
-    onRestored: () => attachments.clear(),
+    onRestored: () => {
+      attachments.clear()
+      // Read-only windows reload the restored workspace.
+      lock.announceSave()
+    },
   })
 
   let remoteReload: ReturnType<typeof setTimeout> | null = null

@@ -351,6 +351,7 @@ export class BackupService {
    */
   async restore(validated: Extract<ArchiveValidation, { ok: true }>): Promise<void> {
     if (this.state.running) throw new Error('Another backup task is already running.')
+    if (this.store.getState().readOnly) throw new Error('Restore is only available in the window that is editing.')
     this.set({ running: 'restore' })
     try {
       const { bytes, at } = await this.createArchive().catch((err: unknown) => {
