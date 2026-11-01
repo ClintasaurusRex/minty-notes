@@ -2,18 +2,22 @@
 
 A local-first notebook for technical projects and reusable knowledge, in the Minty charcoal-and-mint style. Notes, layouts, and screenshots stay in your browser on your computer — no account, server, or subscription.
 
-**Status:** first milestone (Stage 0 + Stage 1) — a working notebook with reliable local saving, backups, and offline use. Projects, tasks, search, and document import come in later stages. See `docs/PROGRESS.md`.
+**Status:** Stages 0–2 — a working notebook with reliable local saving, backups, and offline use, plus projects, a reusable reference library, tags, search, and a home dashboard. Tasks, templates, and document import come in later stages. See `docs/PROGRESS.md`.
 
 ## What it does now
 
+- **Home:** active projects, pinned references, recently edited project notes, and recently opened pages.
 - **Quick capture:** “Quick note” (or **Alt+N**) opens a new note in the Inbox. No project or notebook needed.
+- **Projects:** customer, site, job number, status, due date, contacts, equipment, software versions, saved file locations (paths to copy, web links to open), and several system categories. Project notes use the same page editor. Archive, Trash, and restore; deleting a project forever keeps its notes in the Trash and never touches shared library pages.
+- **Reference library:** give a notebook, section, or page a system category (e.g. VTScada). Projects with that category suggest those pages automatically. Pin extra pages or hide suggestions per project. Linked pages are the originals — an edit shows in every project, and the page says it is shared. **Make a project copy** creates an independent page instead.
+- **Tags and search:** tag pages; search project details, note titles and text, tags, categories, and attachment names, with project, category, tag, type, and archived filters. Everything is searched locally.
 - **Organize:** standalone notes, or notebooks → sections → pages. Move pages anytime; links and IDs stay the same. Trash with restore.
 - **Freeform pages:** a 1,200 px page that grows downward. Add text boxes (double-click the page or “Text”) and images anywhere; move, resize, layer, duplicate.
 - **Screenshots:** take a screenshot, click the page, press **Ctrl+V**. Images can also be dropped in or picked from a file.
 - **Rich text:** headings, bold/italic/underline/strike, code, lists, quotes, links.
 - **Undo/redo:** Ctrl+Z / Ctrl+Shift+Z.
 - **Autosave:** the top bar always says Saved, Saving…, Unsaved changes, or Not saved (with retry).
-- **Backups:** choose a backup folder (Chrome/Edge), or download a backup ZIP. Restore checks the whole file first and keeps a safety copy of what it replaces.
+- **Backups:** choose a backup folder (Chrome/Edge), or download a backup ZIP. Backups include projects, links, categories, and tags. Restore checks the whole file first and keeps a safety copy of what it replaces. Older (Stage 1) backups still restore.
 - **Offline:** after the first visit, the app opens without a connection.
 
 Keyboard shortcuts are listed in Settings.

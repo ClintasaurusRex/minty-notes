@@ -1,10 +1,10 @@
 # Minty Notes — progress
 
-Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App version 0.1.2
+Last updated: November 1, 2026 · Branch: `claude/bold-mccarthy-ymvezs` (from `claude/great-gauss-e9zx88` at `3af576f`) · App version 0.2.0
 
 ## Status
 
-**Stage 0 and Stage 1 are complete and checked, including fixes for the four defects found in the review of `6471133` and the held-edit recovery defect found in the recheck of `0f28457`.** Stages 2–6 have not started. Nothing has been deployed.
+**Stages 0, 1, and 2 are complete and checked.** Stage 2 adds projects, the reusable reference library (category suggestions, pins, hides, live links, project copies), tags, local search, the home dashboard, and project archive/trash — on data format 2 / IndexedDB version 3 with migrations from Stage 1. Stages 3–6 have not started. Nothing has been deployed.
 
 ## Completed
 
@@ -39,54 +39,71 @@ The recheck of `0f28457` found that taking editing back replayed held changes as
 - Conflicts (same field changed in both windows), edits to records deleted elsewhere, blocked deletions, and moves into deleted sections are **not applied in place**: they go to a new **"Recovered changes" page in the Inbox**, and a message says how many.
 - Regression tests (`src/store/heldRecovery.test.ts`, 7, fully awaited — no timers): the two reported cases (rename in B; trash + delete notebook in B), same-text conflict, edit to a page deleted forever, conflicting rename, non-conflicting rename alongside B's new content, move into a deleted section. Each ends with a complete backup that passes validation and restores into a clean workspace with the expected result. The browser frozen-window test now also renames the page in B and checks A keeps B's title.
 
+### User-reported checks on real Chrome (Stage 1, before Stage 2 work)
+The user reported these passing on their own machine (not re-run here): note and screenshot persistence; real folder backups; Chrome restart and folder reconnection; restore into another Chrome profile; two-window editing handover; launching the installed app with the preview server stopped.
+
+### Stage 2 — projects and reusable knowledge (0.2.0)
+Built in checked slices: data model + migrations → store/reconcile/backup wiring and tests → UI → browser tests → docs.
+- **Projects:** name, customer, site, job number, status (planned / active / on hold / complete), date-only due date with overdue/soon indicator, description, contacts, equipment, software versions, saved file locations (copyable paths; web links that open only for http/https), and several system categories.
+- **Project notes** use the existing page editor with a project owner. Inbox, standalone notes, notebooks, sections, screenshots, and all editing behavior are unchanged. Pages can be moved into or out of a project without changing their ID.
+- **Reference library:** categories on notebooks, sections, and pages (pages inherit them). A project suggests every library page that shares a category; projects can pin any other page and hide suggestions (hiding never touches the page). Pinned pages in the Trash are listed and come back when restored.
+- **Live links:** a linked page is the original page. It carries a “Reference library — shared page, linked in …” banner naming the projects. **Make a project copy** creates an independent page (new IDs, shared image bytes) labelled “Project copy”, and the project then shows the copy instead of the original.
+- **Tags and search:** tags on pages; Settings manages categories and tags (rename, delete with usage counts, starter categories; starter notebooks now get matching categories). Search covers project details, page titles and text, tags, categories, and attachment names, with project, category, tag, type, and include-archived filters.
+- **Home dashboard:** active projects (status, customer/site/job, categories, note and reference counts, due state), pinned references, recently edited project notes, recently opened pages, unsorted Inbox count, continue-last-page.
+- **Archive and recoverable deletion:** archive/unarchive; project Trash with restore; delete forever moves the project's notes to the page Trash (restorable to the Inbox) and never touches shared library pages. Deleting a page forever removes its pins/hides everywhere and marks copies' source as deleted; deleting a category/tag removes it everywhere.
+- **Wiring:** new record stores go through the same change sets, one-transaction autosave, owner-token fencing, revision counter, full backup/restore with validation, and held-edit reconciliation (ID lists merge as sets; dangling links are removed and reported in “Recovered changes”).
+- **Migrations:** IndexedDB 2 → 3 (and 1 → 2 → 3) and backup format 1 → 2, keeping every Stage 1 note, ID, attachment, timestamp, layout, and revision. The version-1 trashed-orphan repair still runs for old backups.
+
 ## Verification
 
 | Check | Result | How |
 |---|---|---|
-| `npm ci` | ✅ | baseline at start |
+| Baseline at `3af576f` | ✅ | `npm ci`, build, lint, 61 unit tests, 15 browser tests all passed before any Stage 2 change |
 | `npm run build` (tsc + Vite) | ✅ | |
 | `npm run lint` | ✅ | |
-| `npm test` — 61 unit/integration tests | ✅ | 0.1.2 adds 7 held-edit reconciliation regressions (above). |
-| (0.1.1 details) | ✅ | Vitest + fake-indexeddb: geometry, autosave, failed/retried writes, undo model, archive validation (bad ZIP, wrong format, newer version, tampered records, damaged/missing images, broken links, invalid rich text, duplicates, unsafe paths), restore round trip, restore failure keeps data, snapshot retention, write failure keeps old snapshots, denied/revoked permission, read-only windows, crash guard. **Added for 0.1.1 (22):** handover refused on failed save / thrown error, successful handover, steal from a frozen editor reports loss, failed preparation gives the lock back (fake Web Locks + real Node BroadcastChannel); fencing refuses stale writes; revoking cancels retries (fake timers, no sleeps); held edits saved on take-back or discarded; trashed pages rehomed on section and notebook delete; v1 backup with orphan restores, live orphan still rejected; DB migration 1 → 2 (with and without activity); revision per commit; snapshot revision recorded; same-millisecond change; wall-clock jumps and backwards clock; changes before/after the snapshot read during preparation; 0.1.0 status without revision; deterministic auto-snapshot timing (injected monotonic clock) |
-| `npm run test:e2e` — 15 browser tests | ✅ | The frozen-window test also checks that reclaiming keeps the other window's newer page title. |
-| (0.1.1 details) | ✅ | Real headless Chromium against the production build (see below). Added: refused handover keeps the editor's unsaved text; a frozen editor whose lock is stolen becomes read-only, holds its edit (not written even after storage recovers), and saves it on take-back without losing the other window's work |
-| Save-then-update flow | ✅ (scripted) | New build published under a running app → banner → edits typed just before updating were saved → new version loaded |
-| Heavy page timing | ✅ (scripted) | `scripts/heavy-page-check.mjs`: 85 text + 15 images open ≈ 0.53 s; keystroke ≈ 8 ms; pointer move ≈ 17 ms (4 vCPU cloud container) |
-| `npm audit --omit=dev` | ✅ 0 | 12 moderate advisories remain in dev-only lint tooling (`minimatch` via ESLint/typescript-eslint), present before this work; the only automated fix is a breaking downgrade, so left as is |
+| `npm test` — 85 unit/integration tests | ✅ | 61 from Stage 1 (adapted to format 2) + 24 new, below |
+| Migrations (`src/storage/db.test.ts`) | ✅ | DB 1 → 3: revision added, trashed orphan repaired, Stage 2 fields added. DB 2 → 3 with real Stage 1 records: same page/notebook/section IDs, titles, timestamps, object geometry, text, attachment bytes, and revision; Stage 2 features then work and the result backs up and restores. A migration failure (simulated failed write) aborts and leaves the version-2 database untouched |
+| Stage 2 proofs (`src/store/projects.test.ts`) | ✅ | **One shared reference updates across two projects** (suggested in one, pinned in the other; edit + reload; both resolve the same page and text). **An independent project copy remains unchanged** when the original is edited, and vice versa (new IDs, shared image bytes). Suggestions by notebook/section/page category; pin/hide/unhide. Archive, trash, restore, delete forever (notes to Trash, library page survives and stays linked elsewhere). Trashed and deleted sources leave no dangling links. Category/tag deletion. **Projects, details, links, copies, categories, tags, and attachments survive full backup → clean restore** (every record compared). Broken Stage 2 relationships are rejected. **Stage 1 (format 1) backups** restore with upgraded records |
+| Ownership and held edits (`src/store/heldProjects.test.ts`) | ✅ | Fencing refuses a stale project write. Held project edit + other window's rename both survive; pins and hides merge as sets. Conflicting field → other window's value kept, held value in “Recovered changes”. Note created for a project deleted elsewhere goes to the Inbox; edits to the deleted project are recovered, not resurrected. Pin to a page / category deleted elsewhere → link removed and reported. Held project deletion skipped when the other window added a note. Held project copy saved with its objects. Each ends with a validated backup that restores |
+| Search and dates (`src/domain/search.test.ts`) | ✅ | Project details, contacts, software versions, note text, tags, attachment names, accent-insensitive; project/category/tag/kind/archived filters; trashed items excluded; date-only due dates (no time-zone shift) |
+| `npm run test:e2e` — 18 browser tests | ✅ | 15 from Stage 1 (still passing; two expectations adapted to the new restore summary and Home start screen) + 3 new in `e2e/projects.spec.ts`, below |
+| Stage 2 browser workflow | ✅ | Real Chromium, production build: starter notebooks → library page → project A (category suggestion) and B (pinned) → edit from B, shown in A → **make a project copy** in A and change it → edit original again from B → **copy unchanged**, original changed → reload → tag + search with project filter |
+| Stage 2 browser recovery | ✅ | Project details, software, file location, category suggestion, project note with pasted screenshot and tag → archive/unarchive (Home and Archived list) → **download backup → restore in a separate clean browser context** → details, suggestion, text, tag, image SHA-256, search all match → trash → delete forever → note in Trash, shared library page intact |
+| Stage 2 two-window check | ✅ | A frozen window with failing writes edits a project field; B takes the lock and renames the project; A is read-only with the edit held (never written); A takes editing back: both changes kept |
+| Visual check | ✅ (scripted) | Screenshots of Home, project overview, linked reference in a project, search, and a 390 px phone width; no console errors |
+| `npm audit --omit=dev` | ✅ 0 | No new dependencies were added in Stage 2 |
 
-### Required demonstration (`e2e/workflow.spec.ts`) — real browser
+### Stage 1 demonstration (`e2e/workflow.spec.ts`) — real browser
 Quick note in Inbox → type text and bold it → put a PNG on Chromium's real async clipboard and press Ctrl+V → drag the image and resize from a corner → file a second page in a notebook section → reload → text, image SHA-256, and geometry identical → Download backup → open a **separate clean browser context** → restore the file → text (with bold), image SHA-256, exact geometry, and the notebook › section link all match.
 
 ### Real vs. simulated
-- **Real in Chromium:** typing, selection, mouse drags, keyboard paths, clipboard paste via Chromium's async clipboard + Ctrl+V, IndexedDB persistence across reload, downloads, file-input restore, Web Locks (including a real lock steal) + BroadcastChannel between two tabs, service worker caching and offline reload (`context.setOffline`), OPFS directory handles for snapshot writing.
-- **Simulated:** the folder picker (replaced with an origin-private directory handle), permission answers (`queryPermission`/`requestPermission` patched to `prompt`/`denied`/`granted`), write failures (patched `IDBObjectStore.put` and `FileSystemWritableFileStream.write`), disk-full conditions, a frozen tab (that window's BroadcastChannel removed so it never answers), system clock changes (unit tests with injected clocks), and the 0.1.0 database (written with the version-1 schema in fake-indexeddb).
+- **Real in Chromium:** typing, selection, mouse drags, keyboard paths, clipboard paste via Chromium's async clipboard + Ctrl+V, IndexedDB persistence across reload, downloads, file-input restore, Web Locks (including a real lock steal) + BroadcastChannel between two tabs, service worker caching and offline reload (`context.setOffline`), OPFS directory handles for snapshot writing. Stage 2: project editing, category suggestions, pinning, project copies, tags, search, archive/trash/delete, backup → restore in a separate browser context, and the two-window held-edit merge for project data.
+- **Simulated:** the Stage 1 → Stage 2 database upgrade (a schema-1/2 database written with fake-indexeddb in unit tests, not an existing Chrome profile), the folder picker (replaced with an origin-private directory handle), permission answers (`queryPermission`/`requestPermission` patched to `prompt`/`denied`/`granted`), write failures (patched `IDBObjectStore.put` and `FileSystemWritableFileStream.write`), disk-full conditions, a frozen tab (that window's BroadcastChannel removed so it never answers), system clock changes (unit tests with injected clocks), and the 0.1.0 database (written with the version-1 schema in fake-indexeddb).
 - **Not verifiable here:** this container's headless Chromium closes the page whenever a stored directory handle is read back from IndexedDB, so "the chosen folder is remembered after reload/restart" could not be tested. The crash guard makes such a failure recoverable (the folder is forgotten and the user picks it again), but real Chrome behavior must be checked manually.
 
 ## Manual checks still needed (real Chrome on the work laptop)
-1. Choose a backup folder through Chrome's real picker (ideally inside Dropbox); confirm a ZIP appears and Settings shows it.
-2. Close Chrome fully, reopen Minty Notes: the folder should be remembered; Chrome may ask again — use "Reconnect folder" (and try Chrome's "Allow on every visit" if offered). Confirm no crash and that snapshots continue.
-3. Paste real screenshots: Win+Shift+S / Snipping Tool / Print Screen (Windows) and the Linux screenshot tool. Check the image size looks right on a high-DPI display.
-4. Install from Chrome's address bar, then launch the installed app offline.
-5. Restore one of the real folder snapshots in a different Chrome profile.
-6. Check what Settings reports for persistent storage on that machine.
-7. Open Minty Notes in two real Chrome windows: use "Edit here instead" both ways; then leave one window in a long-idle background tab and take over from the other (real tab freezing was not reproduced here).
-8. Upgrade check: open the 0.1.0 build's existing workspace with this build (DB 1 → 2 migration in real Chrome), confirm notes and Trash are intact and a backup restores.
+Stage 1 checks were reported passing by the user (see above). Remaining:
+1. **Upgrade the existing workspace:** open the current 0.1.2 workspace with this build (IndexedDB 2 → 3 in real Chrome). Confirm every note, screenshot, notebook, and Trash item is intact, then make a folder backup and restore it in another profile.
+2. Restore one of the user's real Stage 1 backup ZIPs (format 1) into a spare profile with this build.
+3. Two real Chrome windows: edit project details in one, use “Edit here instead” in the other, and check both directions.
+4. File locations: copy a Windows path; open a Dropbox web link (needs a connection).
+5. Paste real screenshots (Win+Shift+S / Snipping Tool / Linux tool) into a project note; check size on a high-DPI display.
+6. Install/launch the installed app after the update (“Save and update” banner) and confirm it opens offline.
+7. Check that the 30-minute folder snapshots continue after the upgrade.
 
-## Known limitations (Stage 1)
-- Held changes from a window that lost editing live only in that window's memory; closing it (after the warning) discards them. Taking editing back merges them field by field; a text box edited in both windows keeps the other window's text, with this window's text in "Recovered changes" (no character-level text merge).
-- Opening a page can save re-measured text heights (counts as a change, so an extra snapshot may follow).
-- Undo history is per page and in memory; it is cleared on reload. Notebook/page management is not undoable (Trash covers page deletion).
-- No multi-select, alignment guides, or snapping yet. No image alt-text editor. No search, tags, projects, tasks, tables, checklists, shapes/annotation, document import, or PDF export (later stages).
-- Image bytes of deleted image objects stay stored (and in backups) until a cleanup feature exists.
-- Backups are built in memory; very large workspaces may need streaming (Stage 5).
-- Phone layout is basic: the page list overlays the page and wide pages are scaled down; reading/quick-capture polish is Stage 5.
-- Folder backups need Chrome or Edge on a desktop; other browsers use downloads. No backups happen while the app is closed.
-- Restore replaces the whole workspace (merge is later scope). Changing the hosting address needs backup → restore.
-- JavaScript bundle is ~760 KB (≈245 KB gzip), cached after the first visit.
+## Known limitations
+- Stage 1 limitations still apply: held changes live only in that window's memory; no character-level text merge; opening a page can save re-measured text heights; undo is per page and in memory; no multi-select, guides, snapping, alt-text editor, tables, checklists, shapes/annotation, document import, or PDF export; image bytes of deleted objects are kept; backups are built in memory; basic phone layout; folder backups need Chrome/Edge on a desktop and only run while the app is open; restore replaces the whole workspace.
+- Project details, categories, tags, pins/hides, archive, and project trash are not in undo history (page Trash and project Trash cover deletion).
+- Tags are on pages only (not on projects); categories are on projects, notebooks, sections, and pages.
+- Search reads all stored text into memory and is rebuilt after each save; it has not been measured on the 1,000-page synthetic dataset (Stage 5). Original attachment contents are not searched — only their file names.
+- Recently opened pages are per device (`localStorage`) and not in backups.
+- Local file paths are copied, not opened (browsers cannot open arbitrary local paths). Dropbox links open in a new tab and need a connection.
+- A project copy shares image bytes with the original (bytes never change, so the pages stay independent).
+- Deleting a page forever also removes it from other projects' pins; there is no per-link history.
+- Tasks, task boards, templates, and a Files tab are Stage 3. Portable project export is Stage 4.
+- JavaScript bundle is ~870 KB (≈275 KB gzip), cached after the first visit.
 
 ## Next task
-**Stage 2 — projects and reusable knowledge** (see `MINTY_NOTES_PLAN.md` and the handoff's Stage 2 prompt). Start by adding a `Project` record and `{ kind: 'project', projectId }` page location with a format/DB migration (bump `FORMAT_VERSION` to 2 with an archive migration from 1), then project details, system categories, linked reference pages, suggestions, pin/hide, project copies, tags, search, home dashboard, archive. Keep general notes fully usable and prove shared-reference vs. project-copy behavior.
+**Stage 3 — tasks and project workflow** (see `MINTY_NOTES_PLAN.md` and the handoff's Stage 3 prompt): To do / Doing / Done boards with keyboard move controls, priorities, date-only due dates (reuse `src/domain/dates.ts`), a combined task list, task-to-note links, the project Files tab (building on `Project.fileLocations`), and reusable note/project templates. Adding `Task` (and `Template`) records means `FORMAT_VERSION` 3 / `DB_VERSION` 4 migrations; keep the format 1 → 2 archive migration and the version-1 trashed-orphan repair in `readArchive`.
 
-Note for Stage 2: adding the project location means `DB_VERSION` 3 and `FORMAT_VERSION` 2 migrations; keep the version-1 trashed-page repair in `readArchive`.
-
-Before that, do the manual checks above and fix anything they reveal in this milestone.
+Before that, do the manual checks above (especially the real 0.1.2 → 0.2.0 upgrade) and fix anything they reveal in this milestone.

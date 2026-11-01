@@ -1,6 +1,6 @@
 # Minty Notes — architecture and Stage 0 decisions
 
-Status: Stage 0 decisions made and kept for Stage 1 (November 1, 2026). The product source of truth is `MINTY_NOTES_PLAN.md`; this file records how it is built and why.
+Status: Stage 0 decisions made and kept for Stages 1–2 (November 1, 2026). The product source of truth is `MINTY_NOTES_PLAN.md`; this file records how it is built and why.
 
 ## Decision summary
 
@@ -28,7 +28,7 @@ All free and permissively licensed; no paid features used.
 ## Module layout
 
 ```
-src/domain/     types, page geometry, rich-text schema (pure, no browser state)
+src/domain/     types, page geometry, rich-text schema, reference rules, search, date-only values (pure)
 src/storage/    IndexedDB schema + Repository interface (the persistence boundary)
 src/store/      WorkspaceStore: in-memory working copy, autosave, per-page undo/redo
 src/backup/     archive format + validation, folder access, BackupService (snapshots, restore)
@@ -53,6 +53,18 @@ The UI never touches IndexedDB directly. A future desktop shell can replace `Rep
 - New empty text boxes are discarded when you leave them (not when switching to another app, so a screenshot tool does not remove them).
 - Printing and PDF pagination are deferred to Stage 4 and will use this same geometry.
 
+## Projects and reusable knowledge (Stage 2)
+
+- **One owner per page.** `Page.location` is the Inbox, standalone notes, a notebook section, or a project. Project notes are ordinary pages with `{ kind: 'project' }`, so they use the same editor, autosave, undo, backup, and Trash. General notes never need a project.
+- **Links, not copies.** A project shows library pages by ID. `src/domain/references.ts` derives, per project: *pinned* (explicit `pinnedPageIds`), *suggested* (library pages whose effective categories — own ∪ section ∪ notebook — share one with the project, minus `hiddenPageIds`), *hidden*, and pinned pages that are in the Trash. There is no separate association record, so an edit to the page is the edit every project sees, and nothing can drift out of sync. This matches the plan's “project stores its categories and pin/hide overrides”.
+- **Visible sharing.** A linked page shows a “Reference library — shared page, linked in …” banner naming every project that links it, also when opened from the notebook. Opened from a project, it offers **Make a project copy** and Unpin/Hide. A copy is a new page (new page and object IDs, same attachment bytes) owned by the project, labelled “Project copy — independent”; the original is unpinned/hidden in that project so the project shows its copy.
+- **Matching is predictable:** explicit categories only, no AI. Categories are records (`Category`) so renaming one updates every place it is used; tags (`Tag`) are free labels used for search and filtering.
+- **Recoverable deletion.** Archive keeps everything and hides the project from active lists. Trash keeps the project and its notes together. Delete forever moves the project's own notes to the page Trash (restorable to the Inbox) and removes only the project record; shared library pages are never touched. Deleting a page forever removes it from every project's pin/hide lists and clears `copiedFrom.pageId` in its copies; deleting a category or tag strips it everywhere.
+- **Search** (`src/domain/search.ts`) runs in memory: project details (name, customer, site, job number, description, contacts, equipment, software, file locations, categories, status), page titles, tags, effective categories, note text, and attachment file names. Text comes from `store.loadSearchTexts()` (all stored objects, overlaid with pages open in this window), reloaded after each saved revision. Matching is accent- and case-insensitive; every word must match. Filters: project (its notes and linked references), category, tag, result type, include archived. Trashed items are excluded.
+- **Home** shows open projects (not archived/trashed/complete) with due-date state, pinned references across them, recently edited project notes, recently opened pages (per device, `localStorage`), and the Inbox count.
+- **File locations:** `path` entries are shown and copied (a web page cannot open arbitrary local paths); `url` entries open in a new tab only for `http`/`https`.
+- **Navigation:** rail Home · Inbox · Projects · Notebooks · Notes · Search · Trash · Settings. The Projects list drills into one project (Overview, Notes, References); a page opened from a project keeps that project as context.
+
 ## Undo/redo
 
 - Per page, in memory (cleared on reload). Entries store each changed object's before/after state, so unrelated edits never undo each other.
@@ -62,7 +74,7 @@ The UI never touches IndexedDB directly. A future desktop shell can replace `Rep
 
 ## Storage and saving
 
-- IndexedDB database `minty-notes` (schema version 2): `notebooks`, `sections`, `pages`, `objects`, `attachments` (metadata), `blobs` (bytes), `settings`. See `DATA_FORMAT.md`.
+- IndexedDB database `minty-notes` (schema version 3): `projects`, `categories`, `tags`, `notebooks`, `sections`, `pages`, `objects`, `attachments` (metadata), `blobs` (bytes), `settings`. See `DATA_FORMAT.md`. Every record store goes through the same `ChangeSet`, single-transaction commit, owner-token fencing, and revision counter.
 - `WorkspaceStore` applies edits in memory and marks records dirty. Saves are debounced (400 ms, max 2 s) and written in **one transaction**; flush also runs on tab hide/close.
 - Status is honest: `Unsaved changes` → `Saving…` → `Saved`, or `Not saved — retry` with a banner. A failed batch stays queued (newer edits win) and retries with backoff (1 s, 3 s, 10 s, 30 s). Quota errors get a specific message. A page-close warning appears if anything is unsaved.
 - Image bytes are stored **before** any object references them; deleting an image object keeps its bytes so undo works.
@@ -72,7 +84,7 @@ The UI never touches IndexedDB directly. A future desktop shell can replace `Rep
   2. **Handover protocol** (BroadcastChannel): "Edit here instead" sends `takeover`; the editor replies `takeover-ack`, freezes edits, and saves. Only if everything saved does it release the lock; otherwise it replies `takeover-refused` and **keeps editing with its unsaved work**. The requester steals the lock only when no acknowledgement arrives within 3 s (a frozen window); an acknowledged editor gets up to 20 s.
   3. **Storage fencing**: each new editor writes a random owner token (`editorOwner`); every commit and restore checks it in the same transaction. A window that lost the lock — or a frozen one that wakes up — can never overwrite the new editor's work.
 - Losing editing (lock stolen, or a commit refused by fencing) immediately makes the window read-only, cancels queued saves and retries, and stops backups. Unsaved changes are **held in memory** as (base, intended) pairs — the base is the stored version this window last read or wrote — counted in a banner (a page's timestamp alone does not count), and covered by the close-window warning.
-- "Edit here and save them" never replays held records whole. After claiming ownership, each held change is **three-way merged field by field** against the latest stored record (`src/store/reconcile.ts`): fields only this window changed are applied; fields only the other window changed are kept; fields both changed differently keep the stored value. Bookkeeping fields (`updatedAt`) and a text box's measured height never conflict. Edits to records deleted elsewhere are not resurrected; a held deletion is skipped if the record changed or is still in use elsewhere; a held move into a deleted section keeps the stored location. Every such item goes into a separate **"Recovered changes" page in the Inbox** (held text, images, and before/after field notes). The result is written in one fenced transaction, then the window reloads. "Discard them" drops held changes.
+- "Edit here and save them" never replays held records whole. After claiming ownership, each held change is **three-way merged field by field** against the latest stored record (`src/store/reconcile.ts`): fields only this window changed are applied; fields only the other window changed are kept; fields both changed differently keep the stored value. Bookkeeping fields (`updatedAt`) and a text box's measured height never conflict. ID lists (`categoryIds`, `tagIds`, `pinnedPageIds`, `hiddenPageIds`) merge as sets, so a pin in one window and a hide in the other both survive. A final pass removes any link to a category, tag, or page deleted in either window (noted in “Recovered changes”). Edits to records deleted elsewhere (including projects) are not resurrected; a held deletion is skipped if the record changed or is still in use elsewhere (a project that gained a note); a held move into a deleted section or project keeps the stored location, and a page created for a project deleted elsewhere is kept in the Inbox. Every such item goes into a separate **"Recovered changes" page in the Inbox** (held text, images, and before/after field notes). The result is written in one fenced transaction, then the window reloads. "Discard them" drops held changes.
 
 ## Backup and restore
 
