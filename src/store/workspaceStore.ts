@@ -14,6 +14,7 @@ import {
 } from '../domain/types'
 import { changeSetSize, describeStorageError, emptyChangeSet, type ChangeSet, type Repository } from '../storage/repository'
 import { PageHistory, type HistoryEntry, type ObjectChange } from './history'
+import { isIntendedChange, reconcileHeldChanges, type HeldChange, type ReconcileResult, type RecordKind } from './reconcile'
 
 export type SaveStatus = 'saved' | 'pending' | 'saving' | 'error'
 
@@ -102,6 +103,14 @@ export class WorkspaceStore {
   private inflight: Promise<void> | null = null
   /** The batch being written right now (shown on top of stored data until it lands). */
   private inflightBatch: ChangeSet | null = null
+  /**
+   * The stored version of each record as this window last read or wrote it
+   * (`kind:id` → record, or null when known deleted). It is the merge base for
+   * held changes.
+   */
+  private committed = new Map<string, unknown>()
+  /** Unsaved changes kept after losing ownership: base (as known) and intended value. */
+  private held = new Map<string, HeldChange>()
   /** Whether this window may write. Writes also carry `token`, which storage checks. */
   private owner = true
   private token: string | null = null
@@ -156,6 +165,10 @@ export class WorkspaceStore {
   async load(): Promise<void> {
     try {
       const index = await this.repo.loadIndex()
+      this.committed.clear()
+      for (const n of index.notebooks) this.committed.set(`notebooks:${n.id}`, n)
+      for (const sec of index.sections) this.committed.set(`sections:${sec.id}`, sec)
+      for (const pg of index.pages) this.committed.set(`pages:${pg.id}`, pg)
       this.histories.clear()
       this.textSession = null
       // Changes being written or still queued in this window stay visible on top of stored data.
@@ -209,22 +222,83 @@ export class WorkspaceStore {
 
   /**
    * Become the only writer: claim ownership in storage (older owners' writes are
-   * refused from then on), reload the latest data, then save any changes this
-   * window was holding.
+   * refused from then on). Changes held from a lost session are reconciled
+   * against the latest stored data — never replayed as whole records — and
+   * anything that cannot be applied safely goes to a "Recovered changes" note.
    */
-  async becomeEditor(): Promise<void> {
+  async becomeEditor(): Promise<ReconcileResult | null> {
+    if (changeSetSize(this.dirty) > 0 && !this.owner) this.moveDirtyToHeld()
     const token = newId()
     await this.repo.claimOwnership(token)
     this.token = token
     this.owner = true
     this.retryCount = 0
-    if (changeSetSize(this.dirty) > 0) {
-      // Store held edits first, so the reload below already contains them.
-      this.setState({ save: { ...this.state.save, status: 'pending', error: null } })
-      await this.flush()
+    let result: ReconcileResult | null = null
+    if (this.held.size > 0) {
+      try {
+        result = await this.reconcileAndSaveHeld()
+      } catch (err) {
+        // Keep the held changes and stay read-only; nothing was written.
+        this.owner = false
+        this.token = null
+        this.setState({ save: { ...this.state.save, status: 'error', error: describeStorageError(err) } })
+        throw err
+      }
     }
     await this.load()
     this.setState({ readOnly: false, heldChanges: 0, owner: true })
+    return result
+  }
+
+  private async reconcileAndSaveHeld(): Promise<ReconcileResult> {
+    const held = [...this.held.values()]
+    const index = await this.repo.loadIndex()
+    const pageIds = new Set<string>()
+    for (const h of held) {
+      const rec = h.mine ?? h.base
+      if (h.kind === 'objects' && rec) pageIds.add((rec as CanvasObject).pageId)
+      if (h.kind === 'pages') pageIds.add(h.id)
+    }
+    const objects: Record<string, CanvasObject> = {}
+    for (const pageId of pageIds) for (const o of await this.repo.loadPageObjects(pageId)) objects[o.id] = o
+    const at = nowIso()
+    const result = reconcileHeldChanges(held, { notebooks: byId(index.notebooks), sections: byId(index.sections), pages: byId(index.pages), objects }, at)
+    if (changeSetSize(result.changes) > 0) {
+      await this.repo.commit(result.changes, at, this.token)
+      this.setState({ save: { status: 'saved', lastSavedAt: at, error: null } })
+    } else {
+      this.setState({ save: { ...this.state.save, status: 'saved', error: null } })
+    }
+    this.held.clear()
+    return result
+  }
+
+  /** Move queued changes into the held set, remembering what each was based on. */
+  private moveDirtyToHeld(): void {
+    this.addToHeld(this.dirty, true)
+    this.dirty = emptyChangeSet()
+  }
+
+  private addToHeld(changes: ChangeSet, overwrite: boolean): void {
+    for (const kind of Object.keys(changes) as RecordKind[]) {
+      for (const [id, value] of changes[kind] as Map<string, HeldChange['mine']>) {
+        const key = `${kind}:${id}`
+        const existing = this.held.get(key)
+        if (existing) {
+          if (overwrite) existing.mine = value
+        } else {
+          this.held.set(key, { kind, id, base: (this.committed.get(key) as HeldChange['base'] | undefined) ?? null, mine: value })
+        }
+      }
+    }
+    this.setState({ heldChanges: this.countHeld() })
+  }
+
+  /** Held changes that change something real (a page's timestamp alone does not count). */
+  private countHeld(): number {
+    let n = 0
+    for (const h of this.held.values()) if (isIntendedChange(h.base, h.mine)) n++
+    return n
   }
 
   /**
@@ -256,7 +330,8 @@ export class WorkspaceStore {
     this.token = null
     this.clearTimers()
     this.endTextSession()
-    const held = changeSetSize(this.dirty)
+    this.moveDirtyToHeld()
+    const held = this.countHeld()
     this.setState({
       readOnly: true,
       owner: false,
@@ -269,6 +344,7 @@ export class WorkspaceStore {
   async discardHeldChanges(): Promise<void> {
     if (this.owner) return
     this.dirty = emptyChangeSet()
+    this.held.clear()
     this.setState({ heldChanges: 0, save: { ...this.state.save, status: 'saved', error: null } })
     await this.load()
   }
@@ -291,7 +367,7 @@ export class WorkspaceStore {
 
   /** Unsaved or held changes exist (used for the close-window warning). */
   get hasUnsavedChanges(): boolean {
-    return changeSetSize(this.dirty) > 0 || this.inflight !== null
+    return changeSetSize(this.dirty) > 0 || this.inflight !== null || this.held.size > 0
   }
 
   private markDirty<K extends keyof ChangeSet>(store: K, id: string, value: ChangeSet[K] extends Map<string, infer V> ? V : never): void {
@@ -339,28 +415,38 @@ export class WorkspaceStore {
         this.inflight = null
         this.inflightBatch = null
         this.retryCount = 0
+        for (const kind of Object.keys(batch) as RecordKind[]) {
+          for (const [id, value] of batch[kind] as Map<string, unknown>) {
+            const key = `${kind}:${id}`
+            this.committed.set(key, value)
+            // A change held after this batch was sent is now based on what landed.
+            const h = this.held.get(key)
+            if (h) h.base = value as HeldChange['base']
+          }
+        }
         const pending = changeSetSize(this.dirty) > 0
         this.setState({ save: { status: pending ? 'pending' : 'saved', lastSavedAt: at, error: null } })
         this.setData({ lastChangeAt: at, revision })
-        if (!this.owner) this.setState({ heldChanges: changeSetSize(this.dirty) })
+        if (!this.owner) this.setState({ heldChanges: this.countHeld() })
         else if (pending) this.scheduleSave()
       },
       (err: unknown) => {
         this.inflight = null
         this.inflightBatch = null
+        const lostOwnership = err instanceof Error && err.name === 'OwnershipError'
+        if (lostOwnership || !this.owner) {
+          // Never retry: the other window's newer work must not be overwritten.
+          if (this.owner) this.revokeOwnership()
+          this.addToHeld(batch, false) // newer held values for the same records win
+          if (this.held.size > 0) {
+            this.setState({ save: { ...this.state.save, status: 'error', error: 'Another window took over editing before these changes were saved.' } })
+          }
+          return
+        }
         // Put the failed batch back unless a newer edit superseded an entry.
         for (const key of Object.keys(batch) as (keyof ChangeSet)[]) {
           const target = this.dirty[key] as Map<string, unknown>
           for (const [id, value] of batch[key] as Map<string, unknown>) if (!target.has(id)) target.set(id, value)
-        }
-        if (err instanceof Error && err.name === 'OwnershipError') {
-          // Never retry: the other window's newer work must not be overwritten.
-          this.revokeOwnership()
-          return
-        }
-        if (!this.owner) {
-          this.setState({ heldChanges: changeSetSize(this.dirty) })
-          return
         }
         const delay = this.retryDelaysMs[Math.min(this.retryCount, this.retryDelaysMs.length - 1)]
         this.retryCount++
@@ -379,7 +465,7 @@ export class WorkspaceStore {
     this.commitTextSession()
     await this.runSave()
     if (this.inflight) await this.inflight
-    return changeSetSize(this.dirty) === 0 && this.state.save.status !== 'error'
+    return changeSetSize(this.dirty) === 0 && this.held.size === 0 && this.state.save.status !== 'error'
   }
 
   /** Retry a failed save immediately (user action). */
@@ -569,6 +655,7 @@ export class WorkspaceStore {
     // Another call may have loaded it meanwhile; keep the in-memory version.
     const current = this.state.data.objects[pageId]
     if (current) return current
+    for (const o of list) this.committed.set(`objects:${o.id}`, o)
     const map = byId(list)
     // Unstored object changes for this page win over stored ones.
     for (const batch of this.pendingBatches()) {

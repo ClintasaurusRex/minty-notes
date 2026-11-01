@@ -1,0 +1,325 @@
+import { docToPlainText } from '../domain/richtext'
+import {
+  PAGE_WIDTH,
+  newId,
+  type CanvasObject,
+  type ImageObject,
+  type Notebook,
+  type Page,
+  type RichTextDoc,
+  type RichTextNode,
+  type Section,
+  type TextObject,
+} from '../domain/types'
+import { emptyChangeSet, type ChangeSet } from '../storage/repository'
+
+/**
+ * Held-edit reconciliation.
+ *
+ * A window that lost editing rights keeps its unsaved changes as
+ * (base, mine) pairs: `base` is the stored record this window last knew,
+ * `mine` is what it wanted to store (null = delete). When it becomes the
+ * editor again, each pair is merged field by field against the latest stored
+ * record (`theirs`):
+ *
+ *   - a field only this window changed      → this window's value
+ *   - a field only the other window changed → the other window's value
+ *   - a field both changed differently      → conflict: stored value kept,
+ *                                             this window's value recovered
+ *
+ * Changes to records deleted elsewhere are never resurrected, and a deletion
+ * here never removes a record that changed elsewhere. Everything that cannot be
+ * applied safely goes into a separate "Recovered changes" note in the Inbox.
+ * Bookkeeping fields (`updatedAt`) never count as an intended change.
+ */
+
+export type RecordKind = 'notebooks' | 'sections' | 'pages' | 'objects'
+type AnyRecord = Notebook | Section | Page | CanvasObject
+
+export interface HeldChange {
+  kind: RecordKind
+  id: string
+  base: AnyRecord | null
+  mine: AnyRecord | null
+}
+
+export interface LatestRecords {
+  notebooks: Record<string, Notebook>
+  sections: Record<string, Section>
+  pages: Record<string, Page>
+  /** Every stored object of each page the held changes touch. */
+  objects: Record<string, CanvasObject>
+}
+
+export type RecoveredItem =
+  | { type: 'text'; source: string; reason: string; doc: RichTextDoc }
+  | { type: 'image'; source: string; reason: string; image: ImageObject }
+  | { type: 'note'; source: string; reason: string; detail: string }
+
+export interface ReconcileResult {
+  /** Writes to apply (merged records, safe deletions, and the recovery note). */
+  changes: ChangeSet
+  /** Number of held changes that were applied (fully or partly). */
+  applied: number
+  /** Items placed in the recovery note. */
+  recovered: RecoveredItem[]
+  /** Held changes that turned out to be no-ops or already identical. */
+  unchanged: number
+  recoveryPageId: string | null
+}
+
+const IGNORED_FIELDS = new Set(['updatedAt'])
+
+function stable(value: unknown): string {
+  return JSON.stringify(value, (_k, v: unknown) =>
+    v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) : v,
+  )
+}
+
+export function sameValue(a: unknown, b: unknown): boolean {
+  return stable(a) === stable(b)
+}
+
+/** True when `mine` differs from `base` in anything other than bookkeeping fields. */
+export function isIntendedChange(base: AnyRecord | null, mine: AnyRecord | null): boolean {
+  if (!base || !mine) return base !== mine
+  const keys = new Set([...Object.keys(base), ...Object.keys(mine)])
+  for (const k of keys) {
+    if (IGNORED_FIELDS.has(k)) continue
+    if (!sameValue((base as unknown as Record<string, unknown>)[k], (mine as unknown as Record<string, unknown>)[k])) return true
+  }
+  return false
+}
+
+interface FieldMerge<T> {
+  result: T
+  changed: boolean
+  conflicts: string[]
+}
+
+/** Three-way merge of one record. `derived` fields never conflict (stored value wins). */
+function mergeFields<T extends AnyRecord>(base: T, mine: T, theirs: T, derived: string[], now: string): FieldMerge<T> {
+  const b = base as unknown as Record<string, unknown>
+  const m = mine as unknown as Record<string, unknown>
+  const t = theirs as unknown as Record<string, unknown>
+  const out: Record<string, unknown> = { ...t }
+  const conflicts: string[] = []
+  let changed = false
+  for (const k of new Set([...Object.keys(b), ...Object.keys(m), ...Object.keys(t)])) {
+    if (IGNORED_FIELDS.has(k)) continue
+    if (sameValue(m[k], b[k])) continue // only theirs (or nobody) changed it
+    if (sameValue(t[k], b[k])) {
+      out[k] = m[k] // only mine changed it
+      changed = true
+    } else if (!sameValue(m[k], t[k]) && !derived.includes(k)) {
+      conflicts.push(k) // both changed it differently: keep theirs
+    }
+  }
+  if (changed) out.updatedAt = now
+  return { result: out as unknown as T, changed, conflicts }
+}
+
+function describeLocation(p: Page, latest: LatestRecords): string {
+  if (p.location.kind === 'inbox') return 'Inbox'
+  if (p.location.kind === 'standalone') return 'Standalone notes'
+  const s = latest.sections[p.location.sectionId]
+  return s ? `${latest.notebooks[s.notebookId]?.title ?? 'Notebook'} › ${s.title}` : 'a deleted section'
+}
+
+function fieldText(kind: RecordKind, field: string, value: unknown, latest: LatestRecords): string {
+  if (kind === 'pages' && field === 'location') return describeLocation({ location: value } as Page, latest)
+  if (field === 'trashedAt') return value ? 'in the Trash' : 'not in the Trash'
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  return stable(value)
+}
+
+const FIELD_LABELS: Record<string, string> = { title: 'Title', location: 'Location', trashedAt: 'Trash state', order: 'Order', notebookId: 'Notebook' }
+
+export function reconcileHeldChanges(held: HeldChange[], latest: LatestRecords, now: string): ReconcileResult {
+  const changes = emptyChangeSet()
+  const recovered: RecoveredItem[] = []
+  let applied = 0
+  let unchanged = 0
+  // Working view of the workspace after the writes decided so far.
+  const view = {
+    notebooks: { ...latest.notebooks },
+    sections: { ...latest.sections },
+    pages: { ...latest.pages },
+    objects: { ...latest.objects },
+  }
+  const put = (kind: RecordKind, rec: AnyRecord) => {
+    ;(view[kind] as Record<string, AnyRecord>)[rec.id] = rec
+    ;(changes[kind] as Map<string, AnyRecord | null>).set(rec.id, rec)
+  }
+  const remove = (kind: RecordKind, id: string) => {
+    delete (view[kind] as Record<string, AnyRecord>)[id]
+    ;(changes[kind] as Map<string, AnyRecord | null>).set(id, null)
+  }
+  const pageName = (pageId: string, fallback?: AnyRecord | null) =>
+    view.pages[pageId]?.title ?? latest.pages[pageId]?.title ?? (fallback as Page | null)?.title ?? 'a deleted page'
+  const sourceOf = (h: HeldChange): string => {
+    const rec = (h.mine ?? h.base)!
+    if (h.kind === 'objects') return `On page “${pageName((rec as CanvasObject).pageId)}”`
+    const title = (rec as Notebook).title
+    return h.kind === 'pages' ? `Page “${title}”` : h.kind === 'sections' ? `Section “${title}”` : `Notebook “${title}”`
+  }
+  const recoverRecord = (h: HeldChange, reason: string) => {
+    const rec = h.mine!
+    if (h.kind === 'objects' && (rec as CanvasObject).type === 'text') {
+      recovered.push({ type: 'text', source: sourceOf(h), reason, doc: (rec as TextObject).doc })
+    } else if (h.kind === 'objects') {
+      recovered.push({ type: 'image', source: sourceOf(h), reason, image: rec as ImageObject })
+    } else {
+      const fields = h.base
+        ? Object.keys(FIELD_LABELS).filter((f) => !sameValue((h.base as never)[f], (rec as never)[f]) && f in (rec as object))
+        : ['title']
+      const detail = fields.map((f) => `${FIELD_LABELS[f]}: ${fieldText(h.kind, f, (rec as never)[f], latest)}`).join('; ') || 'Details changed'
+      recovered.push({ type: 'note', source: sourceOf(h), reason, detail })
+    }
+  }
+
+  /** A record's parent exists in the current view (sections→notebook, pages→section, objects→page). */
+  const parentOk = (kind: RecordKind, rec: AnyRecord): boolean => {
+    if (kind === 'sections') return !!view.notebooks[(rec as Section).notebookId]
+    if (kind === 'pages') {
+      const loc = (rec as Page).location
+      return loc.kind !== 'section' || !!view.sections[loc.sectionId]
+    }
+    if (kind === 'objects') return !!view.pages[(rec as CanvasObject).pageId]
+    return true
+  }
+
+  const order: RecordKind[] = ['notebooks', 'sections', 'pages', 'objects']
+  const ofKind = (k: RecordKind) => held.filter((h) => h.kind === k)
+
+  // 1) Creations and updates, parents first.
+  for (const kind of order) {
+    for (const h of ofKind(kind)) {
+      if (!h.mine) continue
+      const theirs = (latest[kind] as Record<string, AnyRecord>)[h.id] ?? null
+      if (!h.base) {
+        // Created in this window while it could not save.
+        if (theirs) {
+          if (!sameValue(theirs, h.mine)) recoverRecord(h, 'A record with the same identity already exists; the stored one was kept.')
+          else unchanged++
+          continue
+        }
+        if (parentOk(kind, h.mine)) {
+          put(kind, h.mine)
+          applied++
+        } else if (kind === 'pages') {
+          // Its section was deleted elsewhere: keep the new page, but in the Inbox.
+          put(kind, { ...(h.mine as Page), location: { kind: 'inbox' }, updatedAt: now })
+          recovered.push({ type: 'note', source: sourceOf(h), reason: 'Its section was deleted in the other window.', detail: 'The page was created in the Inbox instead.' })
+          applied++
+        } else {
+          recoverRecord(h, `It was added to ${kind === 'objects' ? 'a page' : kind === 'sections' ? 'a notebook' : 'a parent'} that was deleted in the other window.`)
+        }
+        continue
+      }
+      if (!theirs) {
+        // Changed here, deleted elsewhere: never resurrect it.
+        if (isIntendedChange(h.base, h.mine)) recoverRecord(h, 'It was deleted in the other window, so it was not restored there.')
+        else unchanged++
+        continue
+      }
+      const derived = kind === 'objects' && (h.mine as CanvasObject).type === 'text' ? ['h'] : []
+      const merge = mergeFields(h.base, h.mine, theirs, derived, now)
+      let result = merge.result
+      const conflicts = [...merge.conflicts]
+      if (merge.changed && !parentOk(kind, result)) {
+        // e.g. moved here into a section that was deleted elsewhere: keep the stored location.
+        if (kind === 'pages') result = { ...(result as Page), location: (theirs as Page).location }
+        if (kind === 'sections') result = { ...(result as Section), notebookId: (theirs as Section).notebookId }
+        conflicts.push(kind === 'pages' ? 'location' : 'notebookId')
+      }
+      if (merge.changed && !sameValue(result, theirs)) {
+        put(kind, result)
+        applied++
+      } else if (conflicts.length === 0) {
+        unchanged++
+      }
+      if (conflicts.length > 0) {
+        if (kind === 'objects' && conflicts.includes('doc')) {
+          recovered.push({ type: 'text', source: sourceOf(h), reason: 'This text was also changed in the other window; that version was kept.', doc: (h.mine as TextObject).doc })
+        } else {
+          const detail = conflicts
+            .map((f) => `${FIELD_LABELS[f] ?? f}: this window had ${fieldText(kind, f, (h.mine as never)[f], latest)}; kept ${fieldText(kind, f, (theirs as never)[f], latest)}`)
+            .join('; ')
+          recovered.push({ type: 'note', source: sourceOf(h), reason: 'Changed in both windows; the other window’s version was kept.', detail })
+        }
+      }
+    }
+  }
+
+  // 2) Deletions, children first; only if nothing changed elsewhere since.
+  for (const kind of [...order].reverse()) {
+    for (const h of ofKind(kind)) {
+      if (h.mine || !h.base) continue
+      const theirs = (latest[kind] as Record<string, AnyRecord>)[h.id]
+      if (!theirs || !(view[kind] as Record<string, AnyRecord>)[h.id]) {
+        unchanged++
+        continue
+      }
+      let blocked = isIntendedChange(h.base, theirs)
+      if (!blocked && kind === 'pages') blocked = Object.values(view.objects).some((o) => o.pageId === h.id)
+      if (!blocked && kind === 'sections') blocked = Object.values(view.pages).some((p) => p.location.kind === 'section' && p.location.sectionId === h.id && !p.trashedAt)
+      if (!blocked && kind === 'notebooks') blocked = Object.values(view.sections).some((s) => s.notebookId === h.id)
+      if (blocked) {
+        recovered.push({ type: 'note', source: sourceOf({ ...h, mine: null }), reason: 'It was deleted in this window but changed or still in use in the other window, so it was kept.', detail: 'Delete it again if it is no longer needed.' })
+        continue
+      }
+      if (kind === 'sections') {
+        // Same rule as deleting a section normally: its trashed pages move to the Inbox.
+        for (const p of Object.values(view.pages)) {
+          if (p.location.kind === 'section' && p.location.sectionId === h.id) put('pages', { ...p, location: { kind: 'inbox' }, updatedAt: now })
+        }
+      }
+      remove(kind, h.id)
+      applied++
+    }
+  }
+
+  const recoveryPageId = recovered.length > 0 ? addRecoveryPage(recovered, now, put) : null
+  return { changes, applied, recovered, unchanged, recoveryPageId }
+}
+
+function textDoc(heading: string, lines: string[], body?: RichTextDoc): RichTextDoc {
+  const content: RichTextNode[] = [{ type: 'heading', attrs: { level: 3 }, content: [{ type: 'text', text: heading }] }]
+  for (const line of lines) content.push({ type: 'paragraph', content: [{ type: 'text', text: line }] })
+  if (body?.content?.length) content.push(...body.content)
+  return { type: 'doc', content }
+}
+
+/** A separate Inbox page listing everything that could not be applied in place. */
+function addRecoveryPage(items: RecoveredItem[], now: string, put: (kind: RecordKind, rec: AnyRecord) => void): string {
+  const pageId = newId()
+  const stamp = new Date(now).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  put('pages', { id: pageId, title: `Recovered changes · ${stamp}`, location: { kind: 'inbox' }, order: 0, width: PAGE_WIDTH, createdAt: now, updatedAt: now, trashedAt: null })
+  const textW = 720
+  let y = 48
+  let z = 1
+  const addText = (doc: RichTextDoc) => {
+    const lines = Math.max(3, docToPlainText(doc).split('\n').length + 1)
+    const h = lines * 28
+    put('objects', { id: newId(), pageId, type: 'text', x: 48, y, w: textW, h, z: z++, doc, createdAt: now, updatedAt: now })
+    y += h + 24
+  }
+  addText(
+    textDoc('Changes kept aside', [
+      'Another window edited Minty Notes while this window could not save. These changes conflicted with that work or belonged to something deleted there, so they were kept here instead of overwriting anything.',
+    ]),
+  )
+  for (const item of items) {
+    if (item.type === 'text') addText(textDoc(item.source, [item.reason], item.doc))
+    else if (item.type === 'note') addText(textDoc(item.source, [item.reason, item.detail]))
+    else {
+      addText(textDoc(item.source, [item.reason]))
+      const w = Math.min(item.image.w, PAGE_WIDTH - 96)
+      const h = Math.round((item.image.h * w) / item.image.w)
+      put('objects', { ...item.image, id: newId(), pageId, x: 48, y, w, h, z: z++, createdAt: now, updatedAt: now })
+      y += h + 24
+    }
+  }
+  return pageId
+}

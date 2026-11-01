@@ -4,6 +4,7 @@ import { EditorLock, type HandoverResult } from '../platform/editorLock'
 import { registerServiceWorker } from '../platform/serviceWorker'
 import { requestPersistentStorage } from '../platform/storageInfo'
 import { IdbRepository } from '../storage/repository'
+import type { ReconcileResult } from '../store/reconcile'
 import { WorkspaceStore } from '../store/workspaceStore'
 import { notify } from '../ui/notices'
 import { AttachmentUrls } from './attachmentUrls'
@@ -42,6 +43,16 @@ export async function createServices(): Promise<Services> {
     },
   })
 
+  const reportRecovery = (result: ReconcileResult | null) => {
+    if (!result) return
+    const kept = result.recovered.length
+    if (kept > 0) {
+      notify('info', `Saved this window's held changes where they did not conflict. ${kept} item${kept === 1 ? '' : 's'} that conflicted or belonged to something deleted ${kept === 1 ? 'was' : 'were'} put in “Recovered changes” in the Inbox.`, 15000)
+    } else if (result.applied > 0) {
+      notify('success', "Saved this window's held changes.")
+    }
+  }
+
   let remoteReload: ReturnType<typeof setTimeout> | null = null
   const lock = new EditorLock({
     beforeRelease: async () => {
@@ -51,8 +62,8 @@ export async function createServices(): Promise<Services> {
       return result
     },
     afterAcquire: async () => {
-      // Claims storage ownership, reloads, then saves any changes held here.
-      await store.becomeEditor()
+      // Claims storage ownership, reconciles any changes held here, then reloads.
+      reportRecovery(await store.becomeEditor())
       await backup.init()
       backup.start()
     },
@@ -86,7 +97,7 @@ export async function createServices(): Promise<Services> {
     // Still holding the lock but storage ownership was lost: just reclaim it.
     if (lock.getState() === 'editor' && !store.getState().owner) {
       try {
-        await store.becomeEditor()
+        reportRecovery(await store.becomeEditor())
         backup.start()
         return { ok: true }
       } catch (err) {

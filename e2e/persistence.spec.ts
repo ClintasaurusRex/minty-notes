@@ -100,6 +100,7 @@ test('a frozen editing window that loses the lock stops writing and keeps its ed
   await b.locator('.nav-page').first().click()
   await expect(b.locator('.obj-text')).toHaveText('From A')
   await addTextBox(b, 'From B')
+  await b.getByLabel('Page title').fill('Renamed in B')
   await waitSaved(b)
   await b.reload()
   await expect(b.locator('.obj-text').first()).toHaveText('From A')
@@ -110,6 +111,8 @@ test('a frozen editing window that loses the lock stops writing and keeps its ed
   await waitSaved(a)
   await expect(a.locator('.obj-text').filter({ hasText: 'From A (held)' })).toHaveCount(1)
   await expect(a.locator('.obj-text').filter({ hasText: 'From B' })).toHaveCount(1)
+  // The held body edit did not bring back A's old page title.
+  await expect(a.getByLabel('Page title')).toHaveValue('Renamed in B')
   await b.reload()
   await expect(b.locator('.obj-text').filter({ hasText: 'From A (held)' })).toHaveCount(1)
   await expect(b.locator('.obj-text').filter({ hasText: 'From B' })).toHaveCount(1)

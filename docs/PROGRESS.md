@@ -1,10 +1,10 @@
 # Minty Notes — progress
 
-Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App version 0.1.1
+Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App version 0.1.2
 
 ## Status
 
-**Stage 0 and Stage 1 are complete and checked, including fixes for the four defects found in the independent review of `6471133`.** Stages 2–6 have not started. Nothing has been deployed.
+**Stage 0 and Stage 1 are complete and checked, including fixes for the four defects found in the review of `6471133` and the held-edit recovery defect found in the recheck of `0f28457`.** Stages 2–6 have not started. Nothing has been deployed.
 
 ## Completed
 
@@ -33,6 +33,12 @@ Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App ver
 4. **Backups track revisions, not timestamps.** Each commit increments a stored revision in the same transaction; each snapshot records the revision it captured, read with the archived data. The interval uses a monotonic clock within a session; a clock set backwards counts as due.
 5. Also found and fixed while testing: after taking editing back, the page could briefly reload without the edit that was mid-save (held edits are now saved before reloading, and in-flight saves are overlaid).
 
+### Held-edit recovery fix (0.1.2)
+The recheck of `0f28457` found that taking editing back replayed held changes as whole stale records (a body edit also carries its page record), which could revert a newer title or resurrect a trashed page's old live location in a deleted section (and then fail backup validation). Now:
+- Held changes keep the stored version they were based on, and are **merged field by field** with the latest stored data. Only fields this window actually changed are applied; newer titles, locations, Trash state, and unrelated content are preserved.
+- Conflicts (same field changed in both windows), edits to records deleted elsewhere, blocked deletions, and moves into deleted sections are **not applied in place**: they go to a new **"Recovered changes" page in the Inbox**, and a message says how many.
+- Regression tests (`src/store/heldRecovery.test.ts`, 7, fully awaited — no timers): the two reported cases (rename in B; trash + delete notebook in B), same-text conflict, edit to a page deleted forever, conflicting rename, non-conflicting rename alongside B's new content, move into a deleted section. Each ends with a complete backup that passes validation and restores into a clean workspace with the expected result. The browser frozen-window test now also renames the page in B and checks A keeps B's title.
+
 ## Verification
 
 | Check | Result | How |
@@ -40,8 +46,10 @@ Last updated: November 1, 2026 · Branch: `claude/great-gauss-e9zx88` · App ver
 | `npm ci` | ✅ | baseline at start |
 | `npm run build` (tsc + Vite) | ✅ | |
 | `npm run lint` | ✅ | |
-| `npm test` — 54 unit/integration tests | ✅ | Vitest + fake-indexeddb: geometry, autosave, failed/retried writes, undo model, archive validation (bad ZIP, wrong format, newer version, tampered records, damaged/missing images, broken links, invalid rich text, duplicates, unsafe paths), restore round trip, restore failure keeps data, snapshot retention, write failure keeps old snapshots, denied/revoked permission, read-only windows, crash guard. **Added for 0.1.1 (22):** handover refused on failed save / thrown error, successful handover, steal from a frozen editor reports loss, failed preparation gives the lock back (fake Web Locks + real Node BroadcastChannel); fencing refuses stale writes; revoking cancels retries (fake timers, no sleeps); held edits saved on take-back or discarded; trashed pages rehomed on section and notebook delete; v1 backup with orphan restores, live orphan still rejected; DB migration 1 → 2 (with and without activity); revision per commit; snapshot revision recorded; same-millisecond change; wall-clock jumps and backwards clock; changes before/after the snapshot read during preparation; 0.1.0 status without revision; deterministic auto-snapshot timing (injected monotonic clock) |
-| `npm run test:e2e` — 15 browser tests | ✅ | Real headless Chromium against the production build (see below). Added: refused handover keeps the editor's unsaved text; a frozen editor whose lock is stolen becomes read-only, holds its edit (not written even after storage recovers), and saves it on take-back without losing the other window's work |
+| `npm test` — 61 unit/integration tests | ✅ | 0.1.2 adds 7 held-edit reconciliation regressions (above). |
+| (0.1.1 details) | ✅ | Vitest + fake-indexeddb: geometry, autosave, failed/retried writes, undo model, archive validation (bad ZIP, wrong format, newer version, tampered records, damaged/missing images, broken links, invalid rich text, duplicates, unsafe paths), restore round trip, restore failure keeps data, snapshot retention, write failure keeps old snapshots, denied/revoked permission, read-only windows, crash guard. **Added for 0.1.1 (22):** handover refused on failed save / thrown error, successful handover, steal from a frozen editor reports loss, failed preparation gives the lock back (fake Web Locks + real Node BroadcastChannel); fencing refuses stale writes; revoking cancels retries (fake timers, no sleeps); held edits saved on take-back or discarded; trashed pages rehomed on section and notebook delete; v1 backup with orphan restores, live orphan still rejected; DB migration 1 → 2 (with and without activity); revision per commit; snapshot revision recorded; same-millisecond change; wall-clock jumps and backwards clock; changes before/after the snapshot read during preparation; 0.1.0 status without revision; deterministic auto-snapshot timing (injected monotonic clock) |
+| `npm run test:e2e` — 15 browser tests | ✅ | The frozen-window test also checks that reclaiming keeps the other window's newer page title. |
+| (0.1.1 details) | ✅ | Real headless Chromium against the production build (see below). Added: refused handover keeps the editor's unsaved text; a frozen editor whose lock is stolen becomes read-only, holds its edit (not written even after storage recovers), and saves it on take-back without losing the other window's work |
 | Save-then-update flow | ✅ (scripted) | New build published under a running app → banner → edits typed just before updating were saved → new version loaded |
 | Heavy page timing | ✅ (scripted) | `scripts/heavy-page-check.mjs`: 85 text + 15 images open ≈ 0.53 s; keystroke ≈ 8 ms; pointer move ≈ 17 ms (4 vCPU cloud container) |
 | `npm audit --omit=dev` | ✅ 0 | 12 moderate advisories remain in dev-only lint tooling (`minimatch` via ESLint/typescript-eslint), present before this work; the only automated fix is a breaking downgrade, so left as is |
@@ -65,7 +73,7 @@ Quick note in Inbox → type text and bold it → put a PNG on Chromium's real a
 8. Upgrade check: open the 0.1.0 build's existing workspace with this build (DB 1 → 2 migration in real Chrome), confirm notes and Trash are intact and a backup restores.
 
 ## Known limitations (Stage 1)
-- Held changes from a window that lost editing live only in that window's memory; closing it (after the warning) discards them. Taking editing back saves them record by record over the other window's version of the same items.
+- Held changes from a window that lost editing live only in that window's memory; closing it (after the warning) discards them. Taking editing back merges them field by field; a text box edited in both windows keeps the other window's text, with this window's text in "Recovered changes" (no character-level text merge).
 - Opening a page can save re-measured text heights (counts as a change, so an extra snapshot may follow).
 - Undo history is per page and in memory; it is cleared on reload. Notebook/page management is not undoable (Trash covers page deletion).
 - No multi-select, alignment guides, or snapping yet. No image alt-text editor. No search, tags, projects, tasks, tables, checklists, shapes/annotation, document import, or PDF export (later stages).
