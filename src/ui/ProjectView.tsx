@@ -275,7 +275,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
                   })
                 }
               >
-                <IconTrash size={14} /> Trash
+                <IconTrash size={14} /> Move to Trash
               </button>
             </>
           )}

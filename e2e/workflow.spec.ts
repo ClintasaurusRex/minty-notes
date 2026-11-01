@@ -76,15 +76,15 @@ test('capture, arrange, reload, back up, and restore into a clean workspace', as
   const clean = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const fresh = await clean.newPage()
   await fresh.goto('/')
-  await expect(fresh.getByText('Capture something')).toBeVisible()
+  await expect(fresh.getByTestId('home')).toBeVisible()
   await fresh.getByRole('button', { name: 'Settings' }).click()
   await fresh.getByTestId('restore-file').setInputFiles(backupPath)
   const review = fresh.getByTestId('restore-review')
   await expect(review).toContainText('passed every check')
-  await expect(review.locator('dd').nth(1)).toHaveText('1') // notebooks
-  await expect(review.locator('dd').nth(3)).toHaveText('2') // pages
+  await expect(review.locator('dd').nth(3)).toHaveText('1') // notebooks
+  await expect(review.locator('dd').nth(5)).toHaveText('2') // pages
   await fresh.getByRole('button', { name: 'Replace workspace' }).click()
-  await expect(fresh.getByText(/Restored 2 pages and 1 images/)).toBeVisible()
+  await expect(fresh.getByText(/Restored 0 projects, 2 pages, and 1 images/)).toBeVisible()
   await fresh.getByRole('button', { name: 'Done' }).click()
 
   // 7. Verify note, image bytes, layout, and notebook/page links.

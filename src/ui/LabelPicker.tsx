@@ -79,7 +79,8 @@ export function LabelPicker({ kind, selected, inherited = [], onChange, label }:
               setDraft(v)
               // Choosing an entry from the suggestion list adds it right away.
               const native = e.nativeEvent as InputEvent
-              if (!native.inputType && options.some((o) => o.name === v)) {
+              const picked = !native.inputType || native.inputType === 'insertReplacementText'
+              if (picked && options.some((o) => o.name === v)) {
                 const match = options.find((o) => o.name === v)!
                 onChange([...selected, match.id])
                 setDraft('')
