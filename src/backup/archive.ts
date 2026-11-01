@@ -1,0 +1,372 @@
+import { unzip, zip, type AsyncZippable, type Unzipped } from 'fflate'
+import { validateRichTextDoc } from '../domain/richtext'
+import { FORMAT_VERSION, type AttachmentMeta, type CanvasObject, type WorkspaceRecords } from '../domain/types'
+
+/**
+ * Full-workspace backup archive (ZIP):
+ *   manifest.json        format, version, counts, file list with SHA-256
+ *   records.json         every workspace record (see docs/DATA_FORMAT.md)
+ *   attachments/<id>.<ext>  original attachment bytes
+ *   README.txt           human-readable explanation
+ */
+export const BACKUP_FORMAT = 'minty-notes-backup'
+const MANIFEST = 'manifest.json'
+const RECORDS = 'records.json'
+const README = 'README.txt'
+
+const MAX_TOTAL_BYTES = 4 * 1024 ** 3
+const MAX_ENTRIES = 200_000
+const MAX_ERRORS = 25
+
+export interface ManifestFile {
+  attachmentId: string
+  path: string
+  size: number
+  sha256: string
+  mimeType: string
+}
+
+export interface Manifest {
+  format: typeof BACKUP_FORMAT
+  formatVersion: number
+  app: { name: string; version: string }
+  createdAt: string
+  workspaceId: string
+  counts: { notebooks: number; sections: number; pages: number; objects: number; attachments: number }
+  records: { path: string; size: number; sha256: string }
+  files: ManifestFile[]
+}
+
+export interface BackupSummary {
+  createdAt: string
+  appVersion: string
+  formatVersion: number
+  workspaceId: string
+  counts: Manifest['counts']
+  trashedPages: number
+  attachmentBytes: number
+}
+
+export type ArchiveValidation =
+  | { ok: true; records: WorkspaceRecords; blobs: Map<string, Blob>; summary: BackupSummary; warnings: string[] }
+  | { ok: false; errors: string[] }
+
+const encoder = new TextEncoder()
+const decoder = new TextDecoder('utf-8', { fatal: true })
+
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+const EXTENSIONS: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/bmp': '.bmp',
+  'image/avif': '.avif',
+  'image/svg+xml': '.svg',
+}
+
+function attachmentPath(meta: AttachmentMeta): string {
+  return `attachments/${meta.id}${EXTENSIONS[meta.mimeType] ?? '.bin'}`
+}
+
+function zipAsync(files: AsyncZippable): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => zip(files, (err, data) => (err ? reject(err) : resolve(data))))
+}
+
+/** Build a complete backup archive from workspace records and attachment bytes. */
+export async function buildArchive(records: WorkspaceRecords, blobs: Map<string, Blob>, appVersion: string): Promise<Uint8Array> {
+  const files: ManifestFile[] = []
+  const entries: AsyncZippable = {}
+  for (const meta of records.attachments) {
+    const blob = blobs.get(meta.id)
+    if (!blob) throw new Error(`Attachment bytes are missing for “${meta.fileName}” (${meta.id}).`)
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    const path = attachmentPath(meta)
+    files.push({ attachmentId: meta.id, path, size: bytes.byteLength, sha256: await sha256Hex(bytes), mimeType: meta.mimeType })
+    entries[path] = [bytes, { level: 0 }]
+  }
+  const recordsBytes = encoder.encode(JSON.stringify(records, null, 1))
+  const manifest: Manifest = {
+    format: BACKUP_FORMAT,
+    formatVersion: FORMAT_VERSION,
+    app: { name: 'Minty Notes', version: appVersion },
+    createdAt: new Date().toISOString(),
+    workspaceId: records.workspace.workspaceId,
+    counts: {
+      notebooks: records.notebooks.length,
+      sections: records.sections.length,
+      pages: records.pages.length,
+      objects: records.objects.length,
+      attachments: records.attachments.length,
+    },
+    records: { path: RECORDS, size: recordsBytes.byteLength, sha256: await sha256Hex(recordsBytes) },
+    files,
+  }
+  entries[MANIFEST] = [encoder.encode(JSON.stringify(manifest, null, 2)), { level: 6 }]
+  entries[RECORDS] = [recordsBytes, { level: 6 }]
+  entries[README] = [
+    encoder.encode(
+      `Minty Notes full workspace backup\nCreated: ${manifest.createdAt}\n\n` +
+        `Restore it from Minty Notes → Settings → Restore. records.json holds notes, notebooks,\n` +
+        `sections, and page layout. attachments/ holds the original image files.\n` +
+        `This is a complete working copy, not a redacted document for sharing.\n`,
+    ),
+    { level: 6 },
+  ]
+  return zipAsync(entries)
+}
+
+// ------------------------------------------------------------------ parsing
+
+function isSafePath(name: string): boolean {
+  return !name.startsWith('/') && !name.includes('\\') && !name.split('/').includes('..') && !/^[a-zA-Z]:/.test(name)
+}
+
+function unzipSafely(bytes: Uint8Array, errors: string[], warnings: string[]): Promise<Unzipped | null> {
+  let total = 0
+  let count = 0
+  let tooLarge = false
+  return new Promise((resolve) => {
+    try {
+      unzip(
+        bytes,
+        {
+          filter(file) {
+            count++
+            if (count > MAX_ENTRIES) {
+              tooLarge = true
+              return false
+            }
+            if (!isSafePath(file.name)) {
+              warnings.push(`Ignored unsafe file path in archive: ${file.name}`)
+              return false
+            }
+            const known = file.name === MANIFEST || file.name === RECORDS || file.name.startsWith('attachments/')
+            if (!known) {
+              if (file.name !== README && !file.name.endsWith('/')) warnings.push(`Ignored unexpected file: ${file.name}`)
+              return false
+            }
+            total += file.originalSize
+            if (total > MAX_TOTAL_BYTES) {
+              tooLarge = true
+              return false
+            }
+            return true
+          },
+        },
+        (err, data) => {
+          if (tooLarge) {
+            errors.push('The archive is larger than Minty Notes can safely restore.')
+            resolve(null)
+          } else if (err) {
+            errors.push(`The archive could not be read: ${err.message}`)
+            resolve(null)
+          } else resolve(data)
+        },
+      )
+    } catch (err) {
+      errors.push(`The archive could not be read: ${err instanceof Error ? err.message : String(err)}`)
+      resolve(null)
+    }
+  })
+}
+
+function parseJson(bytes: Uint8Array | undefined, label: string, errors: string[]): unknown {
+  if (!bytes) {
+    errors.push(`${label} is missing.`)
+    return undefined
+  }
+  try {
+    return JSON.parse(decoder.decode(bytes))
+  } catch {
+    errors.push(`${label} is not valid JSON.`)
+    return undefined
+  }
+}
+
+type Obj = Record<string, unknown>
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v)
+const isStr = (v: unknown): v is string => typeof v === 'string'
+const isId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+const isTime = (v: unknown): v is string => typeof v === 'string' && !Number.isNaN(Date.parse(v))
+
+class Checker {
+  readonly errors: string[]
+  constructor(errors: string[]) {
+    this.errors = errors
+  }
+  fail(message: string): void {
+    if (this.errors.length < MAX_ERRORS) this.errors.push(message)
+    else if (this.errors.length === MAX_ERRORS) this.errors.push('…further problems omitted.')
+  }
+  require(cond: boolean, message: string): boolean {
+    if (!cond) this.fail(message)
+    return cond
+  }
+}
+
+function checkCommon(c: Checker, kind: string, r: unknown, i: number): r is Obj {
+  if (!c.require(isObj(r), `${kind} #${i + 1} is not an object.`)) return false
+  const o = r as Obj
+  return c.require(isId(o.id) && isTime(o.createdAt) && isTime(o.updatedAt), `${kind} #${i + 1} has a missing or invalid id or timestamp.`)
+}
+
+function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
+  if (!c.require(isObj(raw), 'records.json does not contain a records object.')) return null
+  const r = raw as Obj
+  const lists = ['notebooks', 'sections', 'pages', 'objects', 'attachments'] as const
+  for (const key of lists) if (!c.require(Array.isArray(r[key]), `records.json is missing the ${key} list.`)) return null
+  const ws = r.workspace
+  if (!c.require(isObj(ws) && isId(ws.workspaceId) && isNum(ws.formatVersion) && isTime(ws.createdAt), 'Workspace information is missing or invalid.')) return null
+
+  const ids = new Set<string>()
+  const unique = (kind: string, id: string) => c.require(!ids.has(id), `Duplicate ${kind} id ${id}.`) && ids.add(id)
+
+  const notebooks = r.notebooks as unknown[]
+  notebooks.forEach((n, i) => {
+    if (checkCommon(c, 'Notebook', n, i) && c.require(isStr(n.title) && isNum(n.order), `Notebook #${i + 1} is invalid.`)) unique('notebook', n.id as string)
+  })
+  const notebookIds = new Set(notebooks.filter(isObj).map((n) => n.id))
+
+  const sections = r.sections as unknown[]
+  sections.forEach((s, i) => {
+    if (checkCommon(c, 'Section', s, i) && c.require(isStr(s.title) && isNum(s.order) && isId(s.notebookId), `Section #${i + 1} is invalid.`)) {
+      unique('section', s.id as string)
+      c.require(notebookIds.has(s.notebookId), `Section “${s.title}” refers to a missing notebook.`)
+    }
+  })
+  const sectionIds = new Set(sections.filter(isObj).map((s) => s.id))
+
+  const pages = r.pages as unknown[]
+  pages.forEach((p, i) => {
+    if (!checkCommon(c, 'Page', p, i)) return
+    const loc = p.location
+    const locOk =
+      isObj(loc) && (loc.kind === 'inbox' || loc.kind === 'standalone' || (loc.kind === 'section' && isId(loc.sectionId)))
+    if (!c.require(isStr(p.title) && isNum(p.order) && isNum(p.width) && p.width > 0 && locOk && (p.trashedAt === null || isTime(p.trashedAt)), `Page #${i + 1} is invalid.`)) return
+    unique('page', p.id as string)
+    if ((loc as Obj).kind === 'section') c.require(sectionIds.has((loc as Obj).sectionId), `Page “${p.title}” refers to a missing section.`)
+  })
+  const pageIds = new Set(pages.filter(isObj).map((p) => p.id))
+
+  const attachments = r.attachments as unknown[]
+  attachments.forEach((a, i) => {
+    if (!c.require(isObj(a) && isId(a.id) && isTime(a.createdAt), `Attachment #${i + 1} has a missing or invalid id or timestamp.`)) return
+    const o = a as Obj
+    if (c.require(isStr(o.fileName) && isStr(o.mimeType) && isNum(o.size) && isStr(o.sha256), `Attachment #${i + 1} is invalid.`)) unique('attachment', o.id as string)
+  })
+  const attachmentIds = new Set(attachments.filter(isObj).map((a) => a.id))
+
+  const objects = r.objects as unknown[]
+  objects.forEach((o, i) => {
+    if (!checkCommon(c, 'Canvas object', o, i)) return
+    const geomOk = isNum(o.x) && isNum(o.y) && isNum(o.w) && isNum(o.h) && isNum(o.z) && o.x >= 0 && o.y >= 0 && o.w > 0 && o.h >= 0
+    if (!c.require(isId(o.pageId) && geomOk, `Canvas object #${i + 1} has invalid placement.`)) return
+    unique('object', o.id as string)
+    c.require(pageIds.has(o.pageId), `Canvas object ${o.id} refers to a missing page.`)
+    if (o.type === 'text') {
+      const problem = validateRichTextDoc(o.doc)
+      c.require(problem === null, `Text in object ${o.id} is not valid: ${problem}`)
+    } else if (o.type === 'image') {
+      if (c.require(isId(o.attachmentId) && isStr(o.alt), `Image object ${o.id} is invalid.`)) {
+        c.require(attachmentIds.has(o.attachmentId), `Image object ${o.id} refers to a missing attachment.`)
+      }
+    } else {
+      c.fail(`Canvas object ${o.id} has an unknown type.`)
+    }
+  })
+
+  if (c.errors.length > 0) return null
+  return r as unknown as WorkspaceRecords
+}
+
+/**
+ * Fully validate an archive before anything is replaced: structure, version,
+ * checksums, record shapes, rich text, and every relationship.
+ */
+export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation> {
+  const errors: string[] = []
+  const warnings: string[] = []
+  if (bytes.byteLength < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    return { ok: false, errors: ['This file is not a Minty Notes backup (it is not a ZIP archive).'] }
+  }
+  const files = await unzipSafely(bytes, errors, warnings)
+  if (!files) return { ok: false, errors }
+
+  const manifest = parseJson(files[MANIFEST], 'manifest.json', errors)
+  if (!isObj(manifest)) return { ok: false, errors: errors.length ? errors : ['manifest.json is invalid.'] }
+  if (manifest.format !== BACKUP_FORMAT) return { ok: false, errors: ['This ZIP file is not a Minty Notes backup.'] }
+  if (!isNum(manifest.formatVersion) || manifest.formatVersion < 1) return { ok: false, errors: ['The backup format version is invalid.'] }
+  if (manifest.formatVersion > FORMAT_VERSION) {
+    return { ok: false, errors: [`This backup was made by a newer version of Minty Notes (format ${manifest.formatVersion}). Update the app before restoring it.`] }
+  }
+  const m = manifest as unknown as Manifest
+  if (!isObj(m.records) || !Array.isArray(m.files) || !isObj(m.counts)) return { ok: false, errors: ['manifest.json is incomplete.'] }
+
+  const recordBytes = files[RECORDS]
+  if (!recordBytes) return { ok: false, errors: ['records.json is missing from the backup.'] }
+  if ((await sha256Hex(recordBytes)) !== m.records.sha256) {
+    return { ok: false, errors: ['records.json does not match its checksum. The backup is damaged.'] }
+  }
+  const raw = parseJson(recordBytes, 'records.json', errors)
+  if (errors.length) return { ok: false, errors }
+
+  const checker = new Checker(errors)
+  const records = validateRecords(raw, checker)
+  if (!records) return { ok: false, errors }
+
+  // Attachment bytes: present, sized, and matching their checksums.
+  const blobs = new Map<string, Blob>()
+  const byId = new Map(m.files.filter(isObj).map((f) => [f.attachmentId, f]))
+  let attachmentBytes = 0
+  for (const meta of records.attachments) {
+    const entry = byId.get(meta.id)
+    if (!entry || !isStr(entry.path)) {
+      checker.fail(`The backup has no file for attachment “${meta.fileName}”.`)
+      continue
+    }
+    const data = files[entry.path]
+    if (!data) {
+      checker.fail(`The file for attachment “${meta.fileName}” is missing from the archive.`)
+      continue
+    }
+    if (data.byteLength !== entry.size || (await sha256Hex(data)) !== entry.sha256) {
+      checker.fail(`The file for attachment “${meta.fileName}” is damaged (checksum mismatch).`)
+      continue
+    }
+    attachmentBytes += data.byteLength
+    blobs.set(meta.id, new Blob([data as Uint8Array<ArrayBuffer>], { type: meta.mimeType }))
+  }
+  if (errors.length) return { ok: false, errors }
+
+  const referenced = new Set(records.objects.filter((o): o is Extract<CanvasObject, { type: 'image' }> => o.type === 'image').map((o) => o.attachmentId))
+  const unused = records.attachments.filter((a) => !referenced.has(a.id)).length
+  if (unused > 0) warnings.push(`${unused} stored image${unused === 1 ? ' is' : 's are'} not placed on any page (kept for completeness).`)
+
+  return {
+    ok: true,
+    records,
+    blobs,
+    warnings,
+    summary: {
+      createdAt: isTime(m.createdAt) ? m.createdAt : '',
+      appVersion: isObj(m.app) && isStr(m.app.version) ? m.app.version : 'unknown',
+      formatVersion: m.formatVersion,
+      workspaceId: records.workspace.workspaceId,
+      counts: {
+        notebooks: records.notebooks.length,
+        sections: records.sections.length,
+        pages: records.pages.length,
+        objects: records.objects.length,
+        attachments: records.attachments.length,
+      },
+      trashedPages: records.pages.filter((p) => p.trashedAt).length,
+      attachmentBytes,
+    },
+  }
+}
