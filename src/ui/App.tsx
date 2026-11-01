@@ -4,9 +4,14 @@ import { applyUpdate } from '../platform/serviceWorker'
 import { ReadOnlyError } from '../store/workspaceStore'
 import { PageView } from './canvas/PageView'
 import { relativeTime } from './format'
-import { IconAlert, IconCheck, IconInbox, IconLeaf, IconNote, IconNotebook, IconPanel, IconQuick, IconSettings, IconTrash } from './icons'
-import { Navigator, type NavSection } from './Navigator'
+import { HomeView } from './HomeView'
+import { IconAlert, IconCheck, IconHome, IconInbox, IconLeaf, IconNote, IconNotebook, IconPanel, IconProject, IconQuick, IconSearch, IconSettings, IconTrash } from './icons'
+import { NavContext, type Nav, type NavSection } from './nav'
+import { Navigator } from './Navigator'
 import { dismissNotice, noticeStore, notify } from './notices'
+import { ProjectView } from './ProjectView'
+import { recordRecent } from './recent'
+import { SearchView } from './SearchView'
 import { SettingsView } from './SettingsView'
 
 function readPref(key: string): string | null {
@@ -30,11 +35,23 @@ function isNarrow(): boolean {
 }
 
 const RAIL: { id: NavSection; label: string; Icon: typeof IconInbox }[] = [
+  { id: 'home', label: 'Home', Icon: IconHome },
   { id: 'inbox', label: 'Inbox', Icon: IconInbox },
-  { id: 'notes', label: 'Notes', Icon: IconNote },
+  { id: 'projects', label: 'Projects', Icon: IconProject },
   { id: 'notebooks', label: 'Notebooks', Icon: IconNotebook },
+  { id: 'notes', label: 'Notes', Icon: IconNote },
+  { id: 'search', label: 'Search', Icon: IconSearch },
   { id: 'trash', label: 'Trash', Icon: IconTrash },
 ]
+
+/** Sections that show the page list beside the main area. */
+const LIST_SECTIONS: NavSection[] = ['inbox', 'projects', 'notebooks', 'notes', 'trash']
+const SECTIONS: NavSection[] = ['home', 'inbox', 'projects', 'notebooks', 'notes', 'search', 'trash', 'settings']
+
+/** The list a page naturally belongs to. */
+function homeSection(kind: string): NavSection {
+  return kind === 'inbox' ? 'inbox' : kind === 'standalone' ? 'notes' : kind === 'project' ? 'projects' : 'notebooks'
+}
 
 function SaveStatus() {
   const { store } = useServices()
@@ -233,34 +250,65 @@ export function App() {
   const phase = useWorkspace((s) => s.phase)
   const loadError = useWorkspace((s) => s.loadError)
   const pages = useWorkspace((s) => s.data.pages)
+  const projects = useWorkspace((s) => s.data.projects)
   const epoch = useWorkspace((s) => s.epoch)
-  const [section, setSection] = useState<NavSection>(() => (readPref('section') as NavSection | null) ?? 'inbox')
+  const [section, setSection] = useState<NavSection>(() => {
+    const saved = readPref('section') as NavSection | null
+    return saved && SECTIONS.includes(saved) ? saved : 'home'
+  })
   const [pageId, setPageId] = useState<string | null>(() => readPref('page'))
+  const [projectId, setProjectId] = useState<string | null>(() => readPref('project'))
   const [navOpen, setNavOpen] = useState(() => !isNarrow())
 
-  const openPage = (id: string) => {
+  const setPage = (id: string | null) => {
     setPageId(id)
     writePref('page', id)
-    if (isNarrow()) setNavOpen(false)
-    if (section === 'settings' || section === 'trash') {
-      setSection('inbox')
-      writePref('section', 'inbox')
-    }
   }
-  const go = (s: NavSection) => {
+  const setProject = (id: string | null) => {
+    setProjectId(id)
+    writePref('project', id)
+  }
+  const setSec = (s: NavSection) => {
     setSection(s)
     writePref('section', s)
+  }
+
+  /** Open a page; `context` opens it inside a project (for linked references). */
+  const openPage = (id: string, context?: string | null) => {
+    const page = store.getState().data.pages[id]
+    if (!page) return
+    const owner = page.location.kind === 'project' ? page.location.projectId : null
+    const inProject = context ?? owner
+    if (inProject) {
+      setSec('projects')
+      setProject(inProject)
+    } else if (!LIST_SECTIONS.includes(section) || section === 'trash' || section === 'projects') {
+      setSec(homeSection(page.location.kind))
+    }
+    setPage(id)
+    recordRecent(id, inProject ?? null)
+    if (isNarrow()) setNavOpen(false)
+  }
+  const openProject = (id: string | null) => {
+    setSec('projects')
+    setProject(id)
+    setPage(null)
+    if (isNarrow() && id) setNavOpen(false)
+  }
+  const go = (s: NavSection) => {
+    if (s === 'projects' && section !== 'projects') setPage(null)
+    setSec(s)
     // On a phone-sized screen the page list overlays the page; show it when switching lists.
-    if (isNarrow() && s !== 'settings') setNavOpen(true)
+    if (isNarrow() && LIST_SECTIONS.includes(s)) setNavOpen(true)
   }
 
   const quickNote = () => {
     try {
       const page = store.createPage({ kind: 'inbox' })
-      go('inbox')
+      setSec('inbox')
       if (isNarrow()) setNavOpen(false)
-      setPageId(page.id)
-      writePref('page', page.id)
+      setPage(page.id)
+      recordRecent(page.id, null)
     } catch (err) {
       if (err instanceof ReadOnlyError) notify('info', err.message)
       else throw err
@@ -288,61 +336,80 @@ export function App() {
   }
 
   const page = pageId ? pages[pageId] : undefined
-  const showPage = section !== 'settings' && page && !page.trashedAt
+  const project = projectId ? projects[projectId] : undefined
+  const pageProject = section === 'projects' && project ? project.id : null
+  const showPage = LIST_SECTIONS.includes(section) && section !== 'trash' && page && !page.trashedAt && (section !== 'projects' || !!pageProject)
+  const listVisible = navOpen && LIST_SECTIONS.includes(section)
+  const nav: Nav = { section, pageId, projectId: project?.id ?? null, go, openPage, openProject, quickNote }
+
+  let main
+  if (section === 'settings') main = <SettingsView />
+  else if (section === 'home') main = <HomeView />
+  else if (section === 'search') main = <SearchView />
+  else if (showPage) main = <PageView key={`${epoch}:${pageId}`} pageId={pageId!} projectId={pageProject} onLeave={() => (pageProject ? openProject(pageProject) : setPage(null))} />
+  else if (section === 'projects' && project) main = <ProjectView projectId={project.id} />
+  else if (section === 'projects')
+    main = (
+      <div className="empty-main">
+        <IconProject size={40} />
+        <h1>Projects</h1>
+        <p className="muted">Choose a project from the list, or create one. Project notes, linked references, details, and file locations live together.</p>
+      </div>
+    )
+  else
+    main = (
+      <div className="empty-main">
+        <IconLeaf size={40} />
+        <h1>Capture something</h1>
+        <p className="muted">Start a quick note — it goes to your Inbox, no project or notebook needed.</p>
+        <button type="button" className="btn btn-primary" onClick={quickNote}>
+          <IconQuick size={16} /> New quick note
+        </button>
+        <p className="muted small">Shortcut: Alt+N</p>
+      </div>
+    )
 
   return (
-    <div className="app">
-      <nav className="rail" aria-label="Main">
-        <div className="rail-logo" title="Minty Notes">
-          <IconLeaf size={22} />
-        </div>
-        <button type="button" className="rail-btn rail-quick" onClick={quickNote} title="Quick note (Alt+N)" data-testid="quick-note">
-          <IconQuick />
-          <span>Quick note</span>
-        </button>
-        {RAIL.map(({ id, label, Icon }) => (
-          <button key={id} type="button" className={`rail-btn${section === id ? ' is-active' : ''}`} aria-current={section === id ? 'true' : undefined} onClick={() => go(id)}>
-            <Icon />
-            <span>{label}</span>
+    <NavContext.Provider value={nav}>
+      <div className="app">
+        <nav className="rail" aria-label="Main">
+          <div className="rail-logo" title="Minty Notes">
+            <IconLeaf size={22} />
+          </div>
+          <button type="button" className="rail-btn rail-quick" onClick={quickNote} title="Quick note (Alt+N)" data-testid="quick-note">
+            <IconQuick />
+            <span>Quick note</span>
           </button>
-        ))}
-        <div className="rail-spacer" />
-        <button type="button" className={`rail-btn${section === 'settings' ? ' is-active' : ''}`} aria-current={section === 'settings' ? 'true' : undefined} onClick={() => go('settings')}>
-          <IconSettings />
-          <span>Settings</span>
-        </button>
-      </nav>
-      {navOpen && section !== 'settings' && <Navigator key={epoch} section={section} pageId={pageId} onOpenPage={openPage} onQuickNote={quickNote} />}
-      <main className="main">
-        <div className="topbar">
-          {section !== 'settings' && (
-            <button type="button" className="icon-btn" aria-label={navOpen ? 'Hide page list' : 'Show page list'} aria-pressed={navOpen} title={navOpen ? 'Hide page list' : 'Show page list'} onClick={() => setNavOpen((v) => !v)}>
-              <IconPanel />
+          {RAIL.map(({ id, label, Icon }) => (
+            <button key={id} type="button" className={`rail-btn${section === id ? ' is-active' : ''}`} aria-current={section === id ? 'true' : undefined} onClick={() => go(id)} data-testid={`rail-${id}`}>
+              <Icon />
+              <span>{label}</span>
             </button>
-          )}
-          <div className="topbar-title">Minty Notes</div>
-          <StatusCluster onSettings={() => go('settings')} />
-        </div>
-        <Banners onSettings={() => go('settings')} />
-        <div className="content">
-          {section === 'settings' ? (
-            <SettingsView />
-          ) : showPage ? (
-            <PageView key={`${epoch}:${pageId}`} pageId={pageId!} onLeave={() => setPageId(null)} />
-          ) : (
-            <div className="empty-main">
-              <IconLeaf size={40} />
-              <h1>Capture something</h1>
-              <p className="muted">Start a quick note — it goes to your Inbox, no project or notebook needed.</p>
-              <button type="button" className="btn btn-primary" onClick={quickNote}>
-                <IconQuick size={16} /> New quick note
+          ))}
+          <div className="rail-spacer" />
+          <button type="button" className={`rail-btn${section === 'settings' ? ' is-active' : ''}`} aria-current={section === 'settings' ? 'true' : undefined} onClick={() => go('settings')} data-testid="rail-settings">
+            <IconSettings />
+            <span>Settings</span>
+          </button>
+        </nav>
+        {listVisible && (
+          <Navigator key={epoch} section={section} pageId={showPage ? pageId : null} projectId={project?.id ?? null} onOpenPage={openPage} onOpenProject={openProject} onQuickNote={quickNote} />
+        )}
+        <main className="main">
+          <div className="topbar">
+            {LIST_SECTIONS.includes(section) && (
+              <button type="button" className="icon-btn" aria-label={navOpen ? 'Hide page list' : 'Show page list'} aria-pressed={navOpen} title={navOpen ? 'Hide page list' : 'Show page list'} onClick={() => setNavOpen((v) => !v)}>
+                <IconPanel />
               </button>
-              <p className="muted small">Shortcut: Alt+N</p>
-            </div>
-          )}
-        </div>
-      </main>
-      <Notices />
-    </div>
+            )}
+            <div className="topbar-title">Minty Notes</div>
+            <StatusCluster onSettings={() => go('settings')} />
+          </div>
+          <Banners onSettings={() => go('settings')} />
+          <div className="content">{main}</div>
+        </main>
+        <Notices />
+      </div>
+    </NavContext.Provider>
   )
 }

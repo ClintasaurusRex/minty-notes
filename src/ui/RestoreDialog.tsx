@@ -84,6 +84,16 @@ export function RestoreDialog({ source, load, onClose }: { source: string; load:
           <dl className="summary">
             <dt>Created</dt>
             <dd>{fullDateTime(step.result.summary.createdAt)}</dd>
+            <dt>Projects</dt>
+            <dd>
+              {step.result.summary.counts.projects}
+              {step.result.summary.archivedProjects > 0 && ` (${step.result.summary.archivedProjects} archived)`}
+              {step.result.summary.trashedProjects > 0 && ` (${step.result.summary.trashedProjects} in Trash)`}
+            </dd>
+            <dt>Categories and tags</dt>
+            <dd>
+              {step.result.summary.counts.categories} categories, {step.result.summary.counts.tags} tags
+            </dd>
             <dt>Notebooks</dt>
             <dd>{step.result.summary.counts.notebooks}</dd>
             <dt>Sections</dt>
@@ -121,7 +131,7 @@ export function RestoreDialog({ source, load, onClose }: { source: string; load:
 
       {step.kind === 'done' && (
         <p role="status" className="ok-text">
-          Restored {step.result.summary.counts.pages} pages and {step.result.summary.counts.attachments} images.
+          Restored {step.result.summary.counts.projects} projects, {step.result.summary.counts.pages} pages, and {step.result.summary.counts.attachments} images.
         </p>
       )}
 

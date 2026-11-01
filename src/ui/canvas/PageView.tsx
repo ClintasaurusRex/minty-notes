@@ -18,7 +18,7 @@ function isTypingTarget(el: EventTarget | null): boolean {
   return el instanceof HTMLElement && !!el.closest('input, textarea, select, [contenteditable="true"]')
 }
 
-export function PageView({ pageId, onLeave }: { pageId: string; onLeave: () => void }) {
+export function PageView({ pageId, projectId = null, onLeave }: { pageId: string; projectId?: string | null; onLeave: () => void }) {
   const { store } = useServices()
   const page = useWorkspace((s) => s.data.pages[pageId])
   const objects = useWorkspace((s) => s.data.objects[pageId])
@@ -293,7 +293,7 @@ export function PageView({ pageId, onLeave }: { pageId: string; onLeave: () => v
   return (
     <CanvasContext.Provider value={api}>
       <div className="page-view">
-        <PageHeader page={page as Page} onLeave={onLeave} zoom={zoom} scale={scale} onZoom={setZoom} />
+        <PageHeader page={page as Page} projectId={projectId} onLeave={onLeave} zoom={zoom} scale={scale} onZoom={setZoom} />
         <Toolbar
           readOnly={readOnly}
           canUndo={canUndo || !!focusedEditor()}

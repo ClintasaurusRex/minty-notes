@@ -1,17 +1,22 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { useServices, useWorkspace } from '../app/context'
+import { normalize } from '../domain/search'
+import { projectNotes, projectReferences } from '../domain/references'
 import type { Page } from '../domain/types'
 import { ReadOnlyError } from '../store/workspaceStore'
 import { shortDateTime } from './format'
-import { IconChevron, IconPencil, IconPlus, IconRestore, IconTrash } from './icons'
+import { IconChevron, IconPencil, IconPin, IconPlus, IconRestore, IconTag, IconTrash } from './icons'
+import { LabelPicker } from './LabelPicker'
+import type { NavSection } from './nav'
 import { notify } from './notices'
-
-export type NavSection = 'inbox' | 'notes' | 'notebooks' | 'trash' | 'settings'
+import { STATUS_LABELS } from './projectFormat'
 
 interface Props {
   section: NavSection
   pageId: string | null
-  onOpenPage: (id: string) => void
+  projectId: string | null
+  onOpenPage: (id: string, projectId?: string | null) => void
+  onOpenProject: (id: string | null) => void
   onQuickNote: () => void
 }
 
@@ -56,8 +61,149 @@ function RenameInput({ value, label, onDone }: { value: string; label: string; o
   )
 }
 
-export function Navigator({ section, pageId, onOpenPage, onQuickNote }: Props) {
+/** Edit the system categories of a notebook or section (pages inside inherit them). */
+function CategoryDialog({ kind, id, onClose }: { kind: 'notebooks' | 'sections'; id: string; onClose: () => void }) {
   const { store } = useServices()
+  const rec = useWorkspace((s) => s.data[kind][id])
+  const notebooks = useWorkspace((s) => s.data.notebooks)
+  const ref = useRef<HTMLDialogElement>(null)
+  const open = (el: HTMLDialogElement | null) => {
+    ref.current = el
+    if (el && !el.open) el.showModal()
+  }
+  if (!rec) return null
+  const inherited = kind === 'sections' ? (notebooks[(rec as { notebookId: string }).notebookId]?.categoryIds ?? []).map((c) => ({ id: c, from: 'its notebook' })) : []
+  return (
+    <dialog ref={open} className="dialog" aria-labelledby="cat-dialog-h" onClose={onClose} onCancel={onClose}>
+      <h2 id="cat-dialog-h">Categories for “{rec.title}”</h2>
+      <p className="muted small">Pages in this {kind === 'notebooks' ? 'notebook' : 'section'} get these system categories, so projects with the same category suggest them as references.</p>
+      <LabelPicker kind="category" label={`Add category to ${rec.title}`} selected={rec.categoryIds} inherited={inherited} onChange={(ids) => guard(() => store.setCategories(kind, id, ids))} />
+      <div className="dialog-actions">
+        <button type="button" className="btn btn-primary" onClick={() => ref.current?.close()}>
+          Done
+        </button>
+      </div>
+    </dialog>
+  )
+}
+
+function ProjectsNav({ projectId, pageId, onOpenPage, onOpenProject }: Pick<Props, 'projectId' | 'pageId' | 'onOpenPage' | 'onOpenProject'>) {
+  const { store } = useServices()
+  const data = useWorkspace((s) => s.data)
+  const readOnly = useWorkspace((s) => s.readOnly)
+  const [filter, setFilter] = useState<'open' | 'archived'>('open')
+  const [query, setQuery] = useState('')
+  const project = projectId ? data.projects[projectId] : undefined
+
+  if (project) {
+    const notes = projectNotes(project.id, data.pages)
+    const refs = projectReferences(project, data)
+    return (
+      <nav className="navigator" aria-label="Project">
+        <button type="button" className="link-btn back-link" onClick={() => onOpenProject(null)}>
+          ‹ All projects
+        </button>
+        <div className="nav-head">
+          <h2 className="project-nav-title">{project.name || 'Untitled project'}</h2>
+        </div>
+        <ul className="nav-list">
+          <li>
+            <button type="button" className={`nav-page${!pageId ? ' is-active' : ''}`} aria-current={!pageId ? 'page' : undefined} onClick={() => onOpenProject(project.id)}>
+              <span className="nav-page-title">Overview</span>
+              <span className="nav-page-meta">{STATUS_LABELS[project.status]}{project.archivedAt ? ' · archived' : ''}{project.trashedAt ? ' · in Trash' : ''}</span>
+            </button>
+          </li>
+        </ul>
+        <div className="nav-subhead">
+          <span>Notes</span>
+          {!readOnly && !project.trashedAt && (
+            <button type="button" className="icon-btn small" aria-label="New project note" title="New project note" onClick={() => guard(() => onOpenPage(store.createPage({ kind: 'project', projectId: project.id }).id, project.id))}>
+              <IconPlus size={14} />
+            </button>
+          )}
+        </div>
+        <ul className="nav-list">
+          {notes.length === 0 && <li className="nav-empty small">No notes</li>}
+          {notes.map((p) => (
+            <PageItem key={p.id} page={p} active={p.id === pageId} onOpen={() => onOpenPage(p.id, project.id)} meta={p.copiedFrom ? 'Project copy' : shortDateTime(p.updatedAt)} />
+          ))}
+        </ul>
+        <div className="nav-subhead">
+          <span>References</span>
+        </div>
+        <ul className="nav-list">
+          {refs.pinned.length + refs.suggested.length === 0 && <li className="nav-empty small">None linked</li>}
+          {refs.pinned.map((p) => (
+            <PageItem key={p.id} page={p} active={p.id === pageId} onOpen={() => onOpenPage(p.id, project.id)} meta={<><IconPin size={11} /> Pinned · library</>} />
+          ))}
+          {refs.suggested.map((p) => (
+            <PageItem key={p.id} page={p} active={p.id === pageId} onOpen={() => onOpenPage(p.id, project.id)} meta="Suggested · library" />
+          ))}
+        </ul>
+      </nav>
+    )
+  }
+
+  const q = normalize(query.trim())
+  const list = Object.values(data.projects)
+    .filter((p) => !p.trashedAt && (filter === 'archived' ? !!p.archivedAt : !p.archivedAt))
+    .filter((p) => !q || normalize([p.name, p.customer, p.site, p.jobNumber].join(' ')).includes(q))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  return (
+    <nav className="navigator" aria-label="Projects">
+      <div className="nav-head">
+        <h2>Projects</h2>
+        {!readOnly && (
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="New project"
+            title="New project"
+            onClick={() =>
+              guard(() => {
+                onOpenProject(store.createProject({ name: 'New project' }).id)
+              })
+            }
+          >
+            <IconPlus />
+          </button>
+        )}
+      </div>
+      <div className="seg" role="group" aria-label="Show projects">
+        <button type="button" className={`seg-btn${filter === 'open' ? ' is-on' : ''}`} aria-pressed={filter === 'open'} onClick={() => setFilter('open')}>
+          Current
+        </button>
+        <button type="button" className={`seg-btn${filter === 'archived' ? ' is-on' : ''}`} aria-pressed={filter === 'archived'} onClick={() => setFilter('archived')}>
+          Archived
+        </button>
+      </div>
+      <input className="nav-filter" aria-label="Filter projects" placeholder="Filter by name, customer, site, job…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      {list.length === 0 ? (
+        <p className="nav-empty">{filter === 'archived' ? 'No archived projects.' : q ? 'No matching projects.' : 'No projects yet.'}</p>
+      ) : (
+        <ul className="nav-list">
+          {list.map((p) => (
+            <li key={p.id}>
+              <button type="button" className="nav-page" onClick={() => onOpenProject(p.id)}>
+                <span className="nav-page-title">{p.name || 'Untitled project'}</span>
+                <span className="nav-page-meta">
+                  {STATUS_LABELS[p.status]}
+                  {[p.customer, p.site].filter(Boolean).length > 0 && ` · ${[p.customer, p.site].filter(Boolean).join(' · ')}`}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </nav>
+  )
+}
+
+export function Navigator({ section, pageId, projectId, onOpenPage, onOpenProject, onQuickNote }: Props) {
+  const { store } = useServices()
+  const projects = useWorkspace((s) => s.data.projects)
+  const categories = useWorkspace((s) => s.data.categories)
+  const [editingCategories, setEditingCategories] = useState<{ kind: 'notebooks' | 'sections'; id: string } | null>(null)
   const pages = useWorkspace((s) => s.data.pages)
   const notebooks = useWorkspace((s) => s.data.notebooks)
   const sections = useWorkspace((s) => s.data.sections)
@@ -74,6 +220,10 @@ export function Navigator({ section, pageId, onOpenPage, onQuickNote }: Props) {
       else next.add(id)
       return next
     })
+
+  if (section === 'projects') {
+    return <ProjectsNav projectId={projectId} pageId={pageId} onOpenPage={onOpenPage} onOpenProject={onOpenProject} />
+  }
 
   if (section === 'inbox' || section === 'notes') {
     const inbox = section === 'inbox'
@@ -112,12 +262,55 @@ export function Navigator({ section, pageId, onOpenPage, onQuickNote }: Props) {
 
   if (section === 'trash') {
     const trashed = all.filter((p) => p.trashedAt).sort((a, b) => b.trashedAt!.localeCompare(a.trashedAt!))
+    const trashedProjects = Object.values(projects)
+      .filter((p) => p.trashedAt)
+      .sort((a, b) => b.trashedAt!.localeCompare(a.trashedAt!))
     return (
       <nav className="navigator" aria-label="Trash">
         <div className="nav-head">
           <h2>Trash</h2>
         </div>
-        <p className="nav-hint">Trashed pages are kept until you delete them forever. Backups include them.</p>
+        <p className="nav-hint">Trashed pages and projects are kept until you delete them forever. Backups include them.</p>
+        {trashedProjects.length > 0 && (
+          <>
+            <div className="nav-subhead">
+              <span>Projects</span>
+            </div>
+            <ul className="nav-list" aria-label="Trashed projects">
+              {trashedProjects.map((p) => {
+                const owned = all.filter((pg) => pg.location.kind === 'project' && pg.location.projectId === p.id).length
+                return (
+                  <li key={p.id} className="trash-item">
+                    <span className="nav-page-title">{p.name || 'Untitled project'}</span>
+                    <span className="nav-page-meta">
+                      Project · {owned} note{owned === 1 ? '' : 's'} · trashed {shortDateTime(p.trashedAt)}
+                    </span>
+                    {!readOnly && (
+                      <span className="row-actions always">
+                        <button type="button" className="btn btn-small" onClick={() => guard(() => store.restoreProject(p.id))}>
+                          <IconRestore size={14} /> Restore
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-small btn-danger"
+                          onClick={() => {
+                            const msg = `Delete the project “${p.name}” forever? Its details and links are removed.${owned ? ` Its ${owned} note${owned === 1 ? '' : 's'} will stay in the Trash (restorable to the Inbox).` : ''} Shared reference pages are not affected.`
+                            if (window.confirm(msg)) guard(() => void store.deleteProjectForever(p.id))
+                          }}
+                        >
+                          Delete forever
+                        </button>
+                      </span>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+            <div className="nav-subhead">
+              <span>Pages</span>
+            </div>
+          </>
+        )}
         {trashed.length === 0 ? (
           <p className="nav-empty">Trash is empty.</p>
         ) : (
@@ -184,11 +377,11 @@ export function Navigator({ section, pageId, onOpenPage, onQuickNote }: Props) {
         <div className="nav-empty">
           <p>No notebooks yet. Notebooks hold sections, and sections hold pages.</p>
           {!readOnly && (
-            <button type="button" className="btn btn-small" onClick={() => guard(() => STARTER_NOTEBOOKS.forEach((t) => store.createNotebook(t)))}>
+            <button type="button" className="btn btn-small" onClick={() => guard(() => STARTER_NOTEBOOKS.forEach((t) => store.createNotebook(t, [store.createCategory(t).id])))}>
               Add starter notebooks
             </button>
           )}
-          <p className="muted small">Creates empty notebooks for {STARTER_NOTEBOOKS.join(', ')}. Rename or delete them freely.</p>
+          <p className="muted small">Creates empty notebooks for {STARTER_NOTEBOOKS.join(', ')}, each with the matching system category. Rename or delete them freely.</p>
         </div>
       )}
       <ul className="tree">
@@ -207,10 +400,14 @@ export function Navigator({ section, pageId, onOpenPage, onQuickNote }: Props) {
                   <button type="button" className="tree-toggle" aria-expanded={open} onClick={() => toggle(nb.id)}>
                     <IconChevron size={14} className={open ? 'rot90' : ''} />
                     <span className="tree-label">{nb.title}</span>
+                    <CategoryHint ids={nb.categoryIds} names={categories} />
                   </button>
                 )}
                 {!readOnly && renaming !== nb.id && (
                   <span className="row-actions">
+                    <button type="button" className="icon-btn small" aria-label={`Categories for ${nb.title}`} title="System categories" onClick={() => setEditingCategories({ kind: 'notebooks', id: nb.id })}>
+                      <IconTag size={14} />
+                    </button>
                     <button type="button" className="icon-btn small" aria-label={`Add section to ${nb.title}`} title="Add section" onClick={() => guard(() => setRenaming(store.createSection(nb.id, 'New section').id))}>
                       <IconPlus size={14} />
                     </button>
@@ -242,10 +439,16 @@ export function Navigator({ section, pageId, onOpenPage, onQuickNote }: Props) {
                           {renaming === sec.id ? (
                             <RenameInput value={sec.title} label="Section name" onDone={finishRename('section', sec.id)} />
                           ) : (
-                            <span className="tree-label section-label">{sec.title}</span>
+                            <span className="tree-label section-label">
+                              {sec.title}
+                              <CategoryHint ids={sec.categoryIds} names={categories} />
+                            </span>
                           )}
                           {!readOnly && renaming !== sec.id && (
                             <span className="row-actions">
+                              <button type="button" className="icon-btn small" aria-label={`Categories for ${sec.title}`} title="System categories" onClick={() => setEditingCategories({ kind: 'sections', id: sec.id })}>
+                                <IconTag size={14} />
+                              </button>
                               <button
                                 type="button"
                                 className="icon-btn small"
@@ -286,6 +489,13 @@ export function Navigator({ section, pageId, onOpenPage, onQuickNote }: Props) {
           )
         })}
       </ul>
+      {editingCategories && <CategoryDialog kind={editingCategories.kind} id={editingCategories.id} onClose={() => setEditingCategories(null)} />}
     </nav>
   )
+}
+
+function CategoryHint({ ids, names }: { ids: string[]; names: Record<string, { name: string }> }) {
+  const list = ids.map((id) => names[id]?.name).filter(Boolean)
+  if (list.length === 0) return null
+  return <span className="cat-hint" title={`System categories: ${list.join(', ')}`}>{list.join(', ')}</span>
 }

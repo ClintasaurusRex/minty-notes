@@ -1,35 +1,125 @@
 import { useServices, useWorkspace } from '../../app/context'
+import { inheritedCategoryIds, isLinkedTo, linkedProjects } from '../../domain/references'
 import type { Page, PageLocation } from '../../domain/types'
-import { IconTrash } from '../icons'
-import { ToolButton } from './Toolbar'
-import { locationLabel, locationKey, parseLocationKey, useLocationOptions } from '../locations'
-import { notify } from '../notices'
+import { ReadOnlyError } from '../../store/workspaceStore'
 import { shortDateTime } from '../format'
+import { IconCopy, IconEyeOff, IconLink, IconPin, IconTrash } from '../icons'
+import { LabelPicker } from '../LabelPicker'
+import { locationKey, locationLabel, parseLocationKey, useLocationOptions } from '../locations'
+import { useNav } from '../nav'
+import { notify } from '../notices'
+import { ToolButton } from './Toolbar'
 
 interface Props {
   page: Page
+  /** The project this page was opened from (its owner, or a project that links it). */
+  projectId: string | null
   onLeave: () => void
   zoom: 'fit' | 'actual'
   scale: number
   onZoom: (zoom: 'fit' | 'actual') => void
 }
 
-export function PageHeader({ page, onLeave, zoom, scale, onZoom }: Props) {
+function guard(fn: () => void) {
+  try {
+    fn()
+  } catch (err) {
+    if (err instanceof ReadOnlyError) notify('info', err.message)
+    else throw err
+  }
+}
+
+/** Explains whether this page is shared (linked) or an independent copy, with the related actions. */
+function ShareBanner({ page, projectId }: { page: Page; projectId: string | null }) {
+  const { store } = useServices()
+  const nav = useNav()
+  const data = useWorkspace((s) => s.data)
+  const readOnly = useWorkspace((s) => s.readOnly)
+  const context = projectId ? data.projects[projectId] : undefined
+  const owned = page.location.kind === 'project'
+  if (page.copiedFrom) {
+    const original = page.copiedFrom.pageId ? data.pages[page.copiedFrom.pageId] : undefined
+    return (
+      <div className="share-banner is-copy" role="note" data-testid="copy-banner">
+        <span className="badge badge-copy">Project copy</span>
+        <span>
+          Independent copy of “{page.copiedFrom.title}” made {shortDateTime(page.copiedFrom.at)}. Changes here do not affect the original{original ? '' : ' (which has since been deleted)'}.
+        </span>
+        {original && !original.trashedAt && (
+          <button type="button" className="btn btn-small btn-ghost" onClick={() => nav.openPage(original.id, null)}>
+            Open original
+          </button>
+        )}
+      </div>
+    )
+  }
+  if (owned) return null
+  const linked = linkedProjects(page, data)
+  const viaProject = context && isLinkedTo(context, page, data)
+  if (linked.length === 0 && !viaProject) return null
+  const pinned = !!context && context.pinnedPageIds.includes(page.id)
+  const copy = async () => {
+    if (!context) return
+    try {
+      const created = await store.makeProjectCopy(context.id, page.id)
+      notify('success', `Made an independent copy in “${context.name}”. The original stays in the reference library.`)
+      nav.openPage(created.id, context.id)
+    } catch (err) {
+      notify(err instanceof ReadOnlyError ? 'info' : 'error', err instanceof Error ? err.message : String(err))
+    }
+  }
+  return (
+    <div className="share-banner" role="note" data-testid="shared-banner">
+      <span className="badge badge-library">
+        <IconLink size={12} /> Reference library
+      </span>
+      <span>
+        Shared page — linked in {linked.length === 1 ? 'project' : `${linked.length} projects`} {linked.map((p) => `“${p.name}”`).join(', ')}. Edits here change it everywhere it is linked.
+      </span>
+      {viaProject && !readOnly && (
+        <span className="btn-row">
+          <button type="button" className="btn btn-small" onClick={() => void copy()}>
+            <IconCopy size={14} /> Make a project copy
+          </button>
+          {pinned ? (
+            <button type="button" className="btn btn-small btn-ghost" onClick={() => guard(() => store.unpinReference(context.id, page.id))}>
+              <IconPin size={14} /> Unpin
+            </button>
+          ) : (
+            <button type="button" className="btn btn-small btn-ghost" onClick={() => guard(() => store.hideReference(context.id, page.id))}>
+              <IconEyeOff size={14} /> Hide from project
+            </button>
+          )}
+        </span>
+      )}
+    </div>
+  )
+}
+
+export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Props) {
   const { store } = useServices()
   const readOnly = useWorkspace((s) => s.readOnly)
   const data = useWorkspace((s) => s.data)
-  const options = useLocationOptions()
+  const options = useLocationOptions(page.location)
+  const context = projectId ? data.projects[projectId] : undefined
+  const inheritedFrom = (() => {
+    if (page.location.kind !== 'section') return 'its section'
+    const sec = data.sections[page.location.sectionId]
+    return sec ? `${data.notebooks[sec.notebookId]?.title ?? 'notebook'} › ${sec.title}` : 'its section'
+  })()
 
   const move = (location: PageLocation) => {
-    store.movePage(page.id, location)
-    notify('success', `Moved to ${locationLabel(location, data)}`)
+    guard(() => {
+      store.movePage(page.id, location)
+      notify('success', `Moved to ${locationLabel(location, data)}`)
+    })
   }
 
   return (
     <header className="page-header">
       <div className="page-header-main">
         <div className="crumbs" aria-label="Location">
-          {locationLabel(page.location, data)}
+          {context && page.location.kind !== 'project' ? `${context.name} › References · from ${locationLabel(page.location, data)}` : locationLabel(page.location, data)}
           <span className="muted"> · created {shortDateTime(page.createdAt)}</span>
         </div>
         <input
@@ -43,6 +133,17 @@ export function PageHeader({ page, onLeave, zoom, scale, onZoom }: Props) {
             if (!e.target.value.trim() && !readOnly) store.renamePage(page.id, 'Untitled page')
           }}
         />
+        <div className="page-labels">
+          <LabelPicker
+            kind="category"
+            label="Add category to this page"
+            selected={page.categoryIds}
+            inherited={inheritedCategoryIds(page, data).map((id) => ({ id, from: inheritedFrom }))}
+            onChange={(ids) => guard(() => store.setCategories('pages', page.id, ids))}
+          />
+          <LabelPicker kind="tag" label="Add tag to this page" selected={page.tagIds} onChange={(ids) => guard(() => store.setPageTags(page.id, ids))} />
+        </div>
+        <ShareBanner page={page} projectId={projectId} />
       </div>
       <div className="page-header-actions">
         <div className="tool-group" role="group" aria-label="Zoom">
@@ -56,48 +157,51 @@ export function PageHeader({ page, onLeave, zoom, scale, onZoom }: Props) {
             {Math.round(scale * 100)}%
           </span>
         </div>
-      {!readOnly && (
-        <>
-          <label className="move-select">
-            <span className="sr-only">Move page to</span>
-            <select
-              value={locationKey(page.location)}
-              onChange={(e) => {
-                const loc = parseLocationKey(e.target.value)
-                if (loc) move(loc)
-              }}
-              title="Move this page"
+        {!readOnly && (
+          <>
+            <label className="move-select">
+              <span className="sr-only">Move page to</span>
+              <select
+                value={locationKey(page.location)}
+                onChange={(e) => {
+                  const loc = parseLocationKey(e.target.value)
+                  if (loc) move(loc)
+                }}
+                title="Move this page (its owner). Other projects can still link to it."
+              >
+                {options.map((group) =>
+                  group.options.length === 1 && !group.label ? (
+                    <option key={group.options[0].key} value={group.options[0].key}>
+                      {group.options[0].label}
+                    </option>
+                  ) : (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.options.map((o) => (
+                        <option key={o.key} value={o.key}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ),
+                )}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() =>
+                guard(() => {
+                  store.trashPage(page.id)
+                  const links = linkedProjects(page, data).length
+                  notify('info', `“${page.title}” moved to Trash${links ? `. It is no longer shown in the ${links} project${links === 1 ? '' : 's'} that link it until restored.` : ''}`)
+                  onLeave()
+                })
+              }
             >
-              {options.map((group) =>
-                group.options.length === 1 && !group.label ? (
-                  <option key={group.options[0].key} value={group.options[0].key}>
-                    {group.options[0].label}
-                  </option>
-                ) : (
-                  <optgroup key={group.label} label={group.label}>
-                    {group.options.map((o) => (
-                      <option key={o.key} value={o.key}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                ),
-              )}
-            </select>
-          </label>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => {
-              store.trashPage(page.id)
-              notify('info', `“${page.title}” moved to Trash`)
-              onLeave()
-            }}
-          >
-            <IconTrash size={16} /> Trash
-          </button>
-        </>
-      )}
+              <IconTrash size={16} /> Trash
+            </button>
+          </>
+        )}
       </div>
     </header>
   )

@@ -6,6 +6,88 @@ import { fullDateTime, relativeTime } from './format'
 import { IconDownload, IconFolder, IconRestore } from './icons'
 import { notify } from './notices'
 import { RestoreDialog } from './RestoreDialog'
+import { ReadOnlyError } from '../store/workspaceStore'
+
+const STARTER_CATEGORIES = ['VTScada', 'Studio 5000', 'Weidmüller', 'Custom tools', 'Panel building']
+
+function guard(fn: () => void) {
+  try {
+    fn()
+  } catch (err) {
+    if (err instanceof ReadOnlyError) notify('info', err.message)
+    else throw err
+  }
+}
+
+function LabelRow({ name, usage, kind, onRename, onDelete, readOnly }: { name: string; usage: number; kind: string; onRename: (v: string) => void; onDelete: () => void; readOnly: boolean }) {
+  const [draft, setDraft] = useState(name)
+  return (
+    <li className="label-row">
+      <input aria-label={`${kind} name ${name}`} value={draft} readOnly={readOnly} onChange={(e) => setDraft(e.target.value)} onBlur={() => (draft.trim() ? onRename(draft) : setDraft(name))} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
+      <span className="muted small">used {usage}×</span>
+      {!readOnly && (
+        <button type="button" className="btn btn-small btn-ghost" aria-label={`Delete ${kind} ${name}`} onClick={() => window.confirm(`Delete the ${kind} “${name}”? It is removed from ${usage} item${usage === 1 ? '' : 's'}; nothing else is deleted.`) && onDelete()}>
+          Delete
+        </button>
+      )}
+    </li>
+  )
+}
+
+/** System categories (drive reference suggestions) and tags (labels for search). */
+function LabelsCard() {
+  const { store } = useServices()
+  const data = useWorkspace((s) => s.data)
+  const readOnly = useWorkspace((s) => s.readOnly)
+  const [newCategory, setNewCategory] = useState('')
+  const [newTag, setNewTag] = useState('')
+  const records = [...Object.values(data.notebooks), ...Object.values(data.sections), ...Object.values(data.pages), ...Object.values(data.projects)]
+  const categoryUse = (id: string) => records.filter((r) => r.categoryIds.includes(id)).length
+  const tagUse = (id: string) => Object.values(data.pages).filter((p) => p.tagIds.includes(id)).length
+  const categories = Object.values(data.categories).sort((a, b) => a.order - b.order)
+  const tags = Object.values(data.tags).sort((a, b) => a.name.localeCompare(b.name))
+  return (
+    <section className="card" aria-labelledby="labels-h">
+      <h2 id="labels-h">Categories and tags</h2>
+      <p className="muted">
+        <strong>System categories</strong> (such as VTScada) go on projects, notebooks, sections, and pages. A project suggests library pages that share one of its categories. <strong>Tags</strong> are free labels on pages for search and filtering.
+      </p>
+      <h3 className="subhead">System categories</h3>
+      {categories.length === 0 && <p className="muted small">No categories yet.</p>}
+      <ul className="label-list">
+        {categories.map((c) => (
+          <LabelRow key={`${c.id}:${c.name}`} name={c.name} kind="category" usage={categoryUse(c.id)} readOnly={readOnly} onRename={(v) => guard(() => store.renameCategory(c.id, v))} onDelete={() => guard(() => store.deleteCategory(c.id))} />
+        ))}
+      </ul>
+      {!readOnly && (
+        <div className="btn-row">
+          <input aria-label="New category name" placeholder="New category" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && newCategory.trim() && (guard(() => store.createCategory(newCategory)), setNewCategory(''))} />
+          <button type="button" className="btn btn-small" disabled={!newCategory.trim()} onClick={() => guard(() => (store.createCategory(newCategory), setNewCategory('')))}>
+            Add category
+          </button>
+          <button type="button" className="btn btn-small btn-ghost" onClick={() => guard(() => STARTER_CATEGORIES.forEach((n) => store.createCategory(n)))}>
+            Add starter categories
+          </button>
+        </div>
+      )}
+      <h3 className="subhead">Tags</h3>
+      {tags.length === 0 && <p className="muted small">No tags yet. Add them from a page’s “+ tag” field.</p>}
+      <ul className="label-list">
+        {tags.map((t) => (
+          <LabelRow key={`${t.id}:${t.name}`} name={t.name} kind="tag" usage={tagUse(t.id)} readOnly={readOnly} onRename={(v) => guard(() => store.renameTag(t.id, v))} onDelete={() => guard(() => store.deleteTag(t.id))} />
+        ))}
+      </ul>
+      {!readOnly && (
+        <div className="btn-row">
+          <input aria-label="New tag name" placeholder="New tag" value={newTag} onChange={(e) => setNewTag(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && newTag.trim() && (guard(() => store.createTag(newTag)), setNewTag(''))} />
+          <button type="button" className="btn btn-small" disabled={!newTag.trim()} onClick={() => guard(() => (store.createTag(newTag), setNewTag('')))}>
+            Add tag
+          </button>
+        </div>
+      )}
+    </section>
+  )
+}
 
 const FOLDER_TEXT: Record<string, string> = {
   unsupported: 'This browser cannot write to a folder. Use “Download backup”. (Folder backups need Chrome or Edge on a computer.)',
@@ -173,6 +255,8 @@ export function SettingsView() {
           </div>
         )}
       </section>
+
+      <LabelsCard />
 
       <section className="card" aria-labelledby="storage-h">
         <h2 id="storage-h">Storage on this computer</h2>
