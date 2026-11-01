@@ -4,16 +4,22 @@ import {
   nowIso,
   type AttachmentMeta,
   type CanvasObject,
+  type Category,
   type Notebook,
   type Page,
+  type Project,
   type Section,
+  type Tag,
   type WorkspaceInfo,
   type WorkspaceRecords,
 } from '../domain/types'
-import { ALL_STORES, openMintyDB, type MintyDatabase, type OpenOptions, type RecordStoreName } from './db'
+import { ALL_STORES, openMintyDB, RECORD_STORES, type MintyDatabase, type OpenOptions, type RecordStoreName } from './db'
 
 /** Pending record writes. A `null` value deletes the record. */
 export type ChangeSet = {
+  projects: Map<string, Project | null>
+  categories: Map<string, Category | null>
+  tags: Map<string, Tag | null>
   notebooks: Map<string, Notebook | null>
   sections: Map<string, Section | null>
   pages: Map<string, Page | null>
@@ -21,11 +27,11 @@ export type ChangeSet = {
 }
 
 export function emptyChangeSet(): ChangeSet {
-  return { notebooks: new Map(), sections: new Map(), pages: new Map(), objects: new Map() }
+  return { projects: new Map(), categories: new Map(), tags: new Map(), notebooks: new Map(), sections: new Map(), pages: new Map(), objects: new Map() }
 }
 
 export function changeSetSize(c: ChangeSet): number {
-  return c.notebooks.size + c.sections.size + c.pages.size + c.objects.size
+  return RECORD_STORES.reduce((n, k) => n + c[k].size, 0)
 }
 
 /** Settings keys. Only `workspace` is part of a backup; the rest are device-local. */
@@ -64,6 +70,9 @@ export class OwnershipError extends Error {
 
 export interface WorkspaceIndex {
   workspace: WorkspaceInfo
+  projects: Project[]
+  categories: Category[]
+  tags: Tag[]
   notebooks: Notebook[]
   sections: Section[]
   pages: Page[]
@@ -78,6 +87,8 @@ export interface WorkspaceIndex {
 export interface Repository {
   loadIndex(): Promise<WorkspaceIndex>
   loadPageObjects(pageId: string): Promise<CanvasObject[]>
+  /** Every stored canvas object (used to build the local search text). */
+  loadAllObjects(): Promise<CanvasObject[]>
   /**
    * Atomically write record changes and bump the revision, but only if `token`
    * still owns the workspace. Returns the new revision; throws OwnershipError otherwise.
@@ -108,13 +119,16 @@ export class IdbRepository implements Repository {
   }
 
   async loadIndex(): Promise<WorkspaceIndex> {
-    const tx = this.db.transaction(['notebooks', 'sections', 'pages', 'attachments', 'settings'], 'readwrite')
+    const tx = this.db.transaction(['projects', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'attachments', 'settings'], 'readwrite')
     let workspace = (await tx.objectStore('settings').get(SETTINGS.workspace)) as WorkspaceInfo | undefined
     if (!workspace) {
       workspace = { workspaceId: newId(), formatVersion: FORMAT_VERSION, createdAt: nowIso() }
       await tx.objectStore('settings').put(workspace, SETTINGS.workspace)
     }
-    const [notebooks, sections, pages, attachments, activity] = await Promise.all([
+    const [projects, categories, tags, notebooks, sections, pages, attachments, activity] = await Promise.all([
+      tx.objectStore('projects').getAll(),
+      tx.objectStore('categories').getAll(),
+      tx.objectStore('tags').getAll(),
       tx.objectStore('notebooks').getAll(),
       tx.objectStore('sections').getAll(),
       tx.objectStore('pages').getAll(),
@@ -122,15 +136,19 @@ export class IdbRepository implements Repository {
       tx.objectStore('settings').get(SETTINGS.activity) as Promise<Activity | undefined>,
     ])
     await tx.done
-    return { workspace, notebooks, sections, pages, attachments, activity: normalizeActivity(activity) }
+    return { workspace, projects, categories, tags, notebooks, sections, pages, attachments, activity: normalizeActivity(activity) }
   }
 
   loadPageObjects(pageId: string): Promise<CanvasObject[]> {
     return this.db.getAllFromIndex('objects', 'byPage', pageId)
   }
 
+  loadAllObjects(): Promise<CanvasObject[]> {
+    return this.db.getAll('objects')
+  }
+
   async commit(changes: ChangeSet, at: string, token: string | null): Promise<number> {
-    const stores: (RecordStoreName | 'settings')[] = ['notebooks', 'sections', 'pages', 'objects', 'settings']
+    const stores: (RecordStoreName | 'settings')[] = [...RECORD_STORES, 'settings']
     const tx = this.db.transaction(stores, 'readwrite')
     const settings = tx.objectStore('settings')
     // Fencing check and revision read happen in the same transaction as the writes.
@@ -150,10 +168,7 @@ export class IdbRepository implements Repository {
         ops.push(value ? store.put(value as never) : store.delete(id))
       }
     }
-    apply('notebooks', changes.notebooks)
-    apply('sections', changes.sections)
-    apply('pages', changes.pages)
-    apply('objects', changes.objects)
+    for (const name of RECORD_STORES) apply(name, changes[name] as Map<string, { id: string } | null>)
     const revision = normalizeActivity(activity).revision + 1
     ops.push(settings.put({ lastChangeAt: at, revision } satisfies Activity, SETTINGS.activity))
     await Promise.all([...ops, tx.done])
@@ -187,8 +202,11 @@ export class IdbRepository implements Repository {
 
   async readAll(): Promise<{ records: WorkspaceRecords; blobs: Map<string, Blob>; revision: number }> {
     const tx = this.db.transaction(ALL_STORES, 'readonly')
-    const [workspace, notebooks, sections, pages, objects, attachments, activity] = await Promise.all([
+    const [workspace, projects, categories, tags, notebooks, sections, pages, objects, attachments, activity] = await Promise.all([
       tx.objectStore('settings').get(SETTINGS.workspace) as Promise<WorkspaceInfo | undefined>,
+      tx.objectStore('projects').getAll(),
+      tx.objectStore('categories').getAll(),
+      tx.objectStore('tags').getAll(),
       tx.objectStore('notebooks').getAll(),
       tx.objectStore('sections').getAll(),
       tx.objectStore('pages').getAll(),
@@ -206,7 +224,7 @@ export class IdbRepository implements Repository {
     )
     await tx.done
     if (!workspace) throw new Error('Workspace information is missing.')
-    return { records: { workspace, notebooks, sections, pages, objects, attachments }, blobs, revision: normalizeActivity(activity).revision }
+    return { records: { workspace, projects, categories, tags, notebooks, sections, pages, objects, attachments }, blobs, revision: normalizeActivity(activity).revision }
   }
 
   async replaceAll(records: WorkspaceRecords, blobs: Map<string, Blob>, token: string | null): Promise<number> {
@@ -224,13 +242,13 @@ export class IdbRepository implements Repository {
       throw new OwnershipError()
     }
     const ops: Promise<unknown>[] = []
-    for (const name of ['notebooks', 'sections', 'pages', 'objects', 'attachments', 'blobs'] as const) {
+    for (const name of [...RECORD_STORES, 'attachments', 'blobs'] as const) {
       ops.push(tx.objectStore(name).clear())
     }
-    for (const n of records.notebooks) ops.push(tx.objectStore('notebooks').put(n))
-    for (const s of records.sections) ops.push(tx.objectStore('sections').put(s))
-    for (const p of records.pages) ops.push(tx.objectStore('pages').put(p))
-    for (const o of records.objects) ops.push(tx.objectStore('objects').put(o))
+    for (const name of RECORD_STORES) {
+      const store = tx.objectStore(name)
+      for (const rec of records[name]) ops.push(store.put(rec as never))
+    }
     for (const a of records.attachments) {
       ops.push(tx.objectStore('attachments').put(a))
       ops.push(tx.objectStore('blobs').put(blobs.get(a.id)!, a.id))

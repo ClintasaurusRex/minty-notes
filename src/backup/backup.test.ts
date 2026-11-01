@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { docFromPlainText } from '../domain/richtext'
 import { newId, nowIso, type ImageObject, type TextObject } from '../domain/types'
 import { freshStore, PNG_1x1 } from '../test/fixtures'
+import { buildStage1Archive, toStage1Records } from '../test/legacy'
 import { buildArchive, readArchive, sha256Hex } from './archive'
 import { BackupService } from './backupService'
 import { isSnapshotName, snapshotFileName } from './folder'
@@ -99,7 +100,7 @@ describe('complete backup and restore', () => {
 
     const validated = await readArchive(downloads[0].bytes)
     if (!validated.ok) throw new Error(validated.errors.join('\n'))
-    expect(validated.summary.counts).toEqual({ notebooks: 1, sections: 1, pages: 2, objects: 2, attachments: 1 })
+    expect(validated.summary.counts).toEqual({ projects: 0, categories: 0, tags: 0, notebooks: 1, sections: 1, pages: 2, objects: 2, attachments: 1 })
 
     // Clean workspace in a separate database.
     const clean = await freshStore()
@@ -448,8 +449,8 @@ describe('trashed pages of deleted sections (version-1 defect)', () => {
     const { records, blobs } = await src.repo.readAll()
     const at = nowIso()
     const orphan = { ...records.pages[0], id: newId(), title: 'Trashed in deleted section', location: { kind: 'section' as const, sectionId: 'deleted-section' }, trashedAt: at }
-    const v1 = { ...records, pages: [...records.pages, orphan] }
-    const validated = await readArchive(await buildArchive(v1, blobs, '0.1.0'))
+    const v1 = toStage1Records({ ...records, pages: [...records.pages, orphan] })
+    const validated = await readArchive(await buildStage1Archive(v1, blobs))
     if (!validated.ok) throw new Error(validated.errors.join('\n'))
     expect(validated.warnings.join(' ')).toMatch(/deleted section/)
     expect(validated.records.pages.find((p) => p.id === orphan.id)?.location).toEqual({ kind: 'inbox' })

@@ -3,12 +3,15 @@ import {
   PAGE_WIDTH,
   newId,
   type CanvasObject,
+  type Category,
   type ImageObject,
   type Notebook,
   type Page,
+  type Project,
   type RichTextDoc,
   type RichTextNode,
   type Section,
+  type Tag,
   type TextObject,
 } from '../domain/types'
 import { emptyChangeSet, type ChangeSet } from '../storage/repository'
@@ -31,10 +34,14 @@ import { emptyChangeSet, type ChangeSet } from '../storage/repository'
  * here never removes a record that changed elsewhere. Everything that cannot be
  * applied safely goes into a separate "Recovered changes" note in the Inbox.
  * Bookkeeping fields (`updatedAt`) never count as an intended change.
+ *
+ * ID lists (categories, tags, a project's pinned/hidden references) are merged
+ * as sets — additions and removals from both windows are kept — and afterwards
+ * every link is checked, so nothing points at a record that no longer exists.
  */
 
-export type RecordKind = 'notebooks' | 'sections' | 'pages' | 'objects'
-type AnyRecord = Notebook | Section | Page | CanvasObject
+export type RecordKind = 'projects' | 'categories' | 'tags' | 'notebooks' | 'sections' | 'pages' | 'objects'
+type AnyRecord = Project | Category | Tag | Notebook | Section | Page | CanvasObject
 
 export interface HeldChange {
   kind: RecordKind
@@ -44,6 +51,9 @@ export interface HeldChange {
 }
 
 export interface LatestRecords {
+  projects: Record<string, Project>
+  categories: Record<string, Category>
+  tags: Record<string, Tag>
   notebooks: Record<string, Notebook>
   sections: Record<string, Section>
   pages: Record<string, Page>
@@ -69,6 +79,17 @@ export interface ReconcileResult {
 }
 
 const IGNORED_FIELDS = new Set(['updatedAt'])
+/** Fields holding lists of IDs; merged as sets instead of conflicting. */
+const SET_FIELDS = new Set(['categoryIds', 'tagIds', 'pinnedPageIds', 'hiddenPageIds'])
+
+/** theirs + what this window added − what this window removed (theirs' order first). */
+function mergeIdSets(base: string[], mine: string[], theirs: string[]): string[] {
+  const b = new Set(base)
+  const m = new Set(mine)
+  const out = theirs.filter((id) => !(b.has(id) && !m.has(id)))
+  for (const id of mine) if (!b.has(id) && !out.includes(id)) out.push(id)
+  return out
+}
 
 function stable(value: unknown): string {
   return JSON.stringify(value, (_k, v: unknown) =>
@@ -108,6 +129,11 @@ function mergeFields<T extends AnyRecord>(base: T, mine: T, theirs: T, derived: 
   for (const k of new Set([...Object.keys(b), ...Object.keys(m), ...Object.keys(t)])) {
     if (IGNORED_FIELDS.has(k)) continue
     if (sameValue(m[k], b[k])) continue // only theirs (or nobody) changed it
+    if (SET_FIELDS.has(k) && Array.isArray(m[k]) && Array.isArray(t[k])) {
+      out[k] = mergeIdSets(Array.isArray(b[k]) ? (b[k] as string[]) : [], m[k] as string[], t[k] as string[])
+      changed = true
+      continue
+    }
     if (sameValue(t[k], b[k])) {
       out[k] = m[k] // only mine changed it
       changed = true
@@ -122,6 +148,7 @@ function mergeFields<T extends AnyRecord>(base: T, mine: T, theirs: T, derived: 
 function describeLocation(p: Page, latest: LatestRecords): string {
   if (p.location.kind === 'inbox') return 'Inbox'
   if (p.location.kind === 'standalone') return 'Standalone notes'
+  if (p.location.kind === 'project') return `project “${latest.projects[p.location.projectId]?.name ?? 'deleted'}”`
   const s = latest.sections[p.location.sectionId]
   return s ? `${latest.notebooks[s.notebookId]?.title ?? 'Notebook'} › ${s.title}` : 'a deleted section'
 }
@@ -129,11 +156,45 @@ function describeLocation(p: Page, latest: LatestRecords): string {
 function fieldText(kind: RecordKind, field: string, value: unknown, latest: LatestRecords): string {
   if (kind === 'pages' && field === 'location') return describeLocation({ location: value } as Page, latest)
   if (field === 'trashedAt') return value ? 'in the Trash' : 'not in the Trash'
-  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  if (field === 'archivedAt') return value ? 'archived' : 'not archived'
+  if (typeof value === 'string' || typeof value === 'number') return String(value) || '(empty)'
+  if (value === null || value === undefined) return '(empty)'
+  if (Array.isArray(value)) {
+    const lookup: Record<string, Record<string, { name?: string; title?: string }>> = { categoryIds: latest.categories, tagIds: latest.tags, pinnedPageIds: latest.pages, hiddenPageIds: latest.pages }
+    const names = value.map((v) => {
+      if (typeof v === 'string') return lookup[field]?.[v]?.name ?? lookup[field]?.[v]?.title ?? v
+      const o = v as Record<string, string>
+      return [o.name ?? o.label, o.detail ?? o.role ?? o.value].filter(Boolean).join(' — ')
+    })
+    return names.length ? names.join(', ') : '(none)'
+  }
+  if (field === 'copiedFrom') return `copy of “${(value as { title?: string }).title ?? ''}”`
   return stable(value)
 }
 
-const FIELD_LABELS: Record<string, string> = { title: 'Title', location: 'Location', trashedAt: 'Trash state', order: 'Order', notebookId: 'Notebook' }
+const FIELD_LABELS: Record<string, string> = {
+  title: 'Title',
+  name: 'Name',
+  location: 'Location',
+  trashedAt: 'Trash state',
+  archivedAt: 'Archive state',
+  order: 'Order',
+  notebookId: 'Notebook',
+  customer: 'Customer',
+  site: 'Site',
+  jobNumber: 'Job number',
+  status: 'Status',
+  dueDate: 'Due date',
+  description: 'Description',
+  contacts: 'Contacts',
+  equipment: 'Equipment',
+  software: 'Software versions',
+  fileLocations: 'File locations',
+  categoryIds: 'Categories',
+  tagIds: 'Tags',
+  pinnedPageIds: 'Pinned references',
+  hiddenPageIds: 'Hidden references',
+}
 
 export function reconcileHeldChanges(held: HeldChange[], latest: LatestRecords, now: string): ReconcileResult {
   const changes = emptyChangeSet()
@@ -142,6 +203,9 @@ export function reconcileHeldChanges(held: HeldChange[], latest: LatestRecords, 
   let unchanged = 0
   // Working view of the workspace after the writes decided so far.
   const view = {
+    projects: { ...latest.projects },
+    categories: { ...latest.categories },
+    tags: { ...latest.tags },
     notebooks: { ...latest.notebooks },
     sections: { ...latest.sections },
     pages: { ...latest.pages },
@@ -160,8 +224,9 @@ export function reconcileHeldChanges(held: HeldChange[], latest: LatestRecords, 
   const sourceOf = (h: HeldChange): string => {
     const rec = (h.mine ?? h.base)!
     if (h.kind === 'objects') return `On page “${pageName((rec as CanvasObject).pageId)}”`
-    const title = (rec as Notebook).title
-    return h.kind === 'pages' ? `Page “${title}”` : h.kind === 'sections' ? `Section “${title}”` : `Notebook “${title}”`
+    const title = (rec as Notebook).title ?? (rec as Project).name
+    const noun = { pages: 'Page', sections: 'Section', notebooks: 'Notebook', projects: 'Project', categories: 'Category', tags: 'Tag' }[h.kind]
+    return `${noun} “${title}”`
   }
   const recoverRecord = (h: HeldChange, reason: string) => {
     const rec = h.mine!
@@ -172,7 +237,7 @@ export function reconcileHeldChanges(held: HeldChange[], latest: LatestRecords, 
     } else {
       const fields = h.base
         ? Object.keys(FIELD_LABELS).filter((f) => !sameValue((h.base as never)[f], (rec as never)[f]) && f in (rec as object))
-        : ['title']
+        : ['title' in (rec as object) ? 'title' : 'name']
       const detail = fields.map((f) => `${FIELD_LABELS[f]}: ${fieldText(h.kind, f, (rec as never)[f], latest)}`).join('; ') || 'Details changed'
       recovered.push({ type: 'note', source: sourceOf(h), reason, detail })
     }
@@ -183,13 +248,15 @@ export function reconcileHeldChanges(held: HeldChange[], latest: LatestRecords, 
     if (kind === 'sections') return !!view.notebooks[(rec as Section).notebookId]
     if (kind === 'pages') {
       const loc = (rec as Page).location
-      return loc.kind !== 'section' || !!view.sections[loc.sectionId]
+      if (loc.kind === 'section') return !!view.sections[loc.sectionId]
+      if (loc.kind === 'project') return !!view.projects[loc.projectId]
+      return true
     }
     if (kind === 'objects') return !!view.pages[(rec as CanvasObject).pageId]
     return true
   }
 
-  const order: RecordKind[] = ['notebooks', 'sections', 'pages', 'objects']
+  const order: RecordKind[] = ['categories', 'tags', 'projects', 'notebooks', 'sections', 'pages', 'objects']
   const ofKind = (k: RecordKind) => held.filter((h) => h.kind === k)
 
   // 1) Creations and updates, parents first.
@@ -265,6 +332,7 @@ export function reconcileHeldChanges(held: HeldChange[], latest: LatestRecords, 
       if (!blocked && kind === 'pages') blocked = Object.values(view.objects).some((o) => o.pageId === h.id)
       if (!blocked && kind === 'sections') blocked = Object.values(view.pages).some((p) => p.location.kind === 'section' && p.location.sectionId === h.id && !p.trashedAt)
       if (!blocked && kind === 'notebooks') blocked = Object.values(view.sections).some((s) => s.notebookId === h.id)
+      if (!blocked && kind === 'projects') blocked = Object.values(view.pages).some((p) => p.location.kind === 'project' && p.location.projectId === h.id)
       if (blocked) {
         recovered.push({ type: 'note', source: sourceOf({ ...h, mine: null }), reason: 'It was deleted in this window but changed or still in use in the other window, so it was kept.', detail: 'Delete it again if it is no longer needed.' })
         continue
@@ -280,8 +348,56 @@ export function reconcileHeldChanges(held: HeldChange[], latest: LatestRecords, 
     }
   }
 
+  // 3) No link may point at a record that no longer exists (deleted in either window).
+  const removedLinks = repairLinks(view, now, put)
+  if (removedLinks > 0) {
+    recovered.push({ type: 'note', source: 'Links', reason: `${removedLinks} link${removedLinks === 1 ? '' : 's'} pointed at a category, tag, or page deleted in the other window and ${removedLinks === 1 ? 'was' : 'were'} removed.`, detail: 'The linked records themselves were not changed.' })
+  }
+
   const recoveryPageId = recovered.length > 0 ? addRecoveryPage(recovered, now, put) : null
   return { changes, applied, recovered, unchanged, recoveryPageId }
+}
+
+type View = { [K in RecordKind]: Record<string, AnyRecord> }
+
+/** Drop category/tag/page IDs that point at missing records. Returns how many were removed. */
+function repairLinks(view: View, now: string, put: (kind: RecordKind, rec: AnyRecord) => void): number {
+  let removed = 0
+  const keep = (ids: string[], table: Record<string, unknown>) => {
+    const kept = ids.filter((id) => id in table)
+    removed += ids.length - kept.length
+    return kept
+  }
+  for (const kind of ['notebooks', 'sections', 'pages', 'projects'] as const) {
+    for (const rec of Object.values(view[kind])) {
+      const r = rec as unknown as Record<string, unknown>
+      const next: Record<string, unknown> = { ...r }
+      let changed = false
+      const fix = (field: string, table: Record<string, unknown>) => {
+        if (!Array.isArray(r[field])) return
+        const kept = keep(r[field] as string[], table)
+        if (kept.length !== (r[field] as string[]).length) {
+          next[field] = kept
+          changed = true
+        }
+      }
+      fix('categoryIds', view.categories)
+      if (kind === 'pages') {
+        fix('tagIds', view.tags)
+        const from = (r as unknown as Page).copiedFrom
+        if (from?.pageId && !view.pages[from.pageId]) {
+          next.copiedFrom = { ...from, pageId: null }
+          changed = true
+        }
+      }
+      if (kind === 'projects') {
+        fix('pinnedPageIds', view.pages)
+        fix('hiddenPageIds', view.pages)
+      }
+      if (changed) put(kind, { ...next, updatedAt: now } as unknown as AnyRecord)
+    }
+  }
+  return removed
 }
 
 function textDoc(heading: string, lines: string[], body?: RichTextDoc): RichTextDoc {
@@ -295,7 +411,7 @@ function textDoc(heading: string, lines: string[], body?: RichTextDoc): RichText
 function addRecoveryPage(items: RecoveredItem[], now: string, put: (kind: RecordKind, rec: AnyRecord) => void): string {
   const pageId = newId()
   const stamp = new Date(now).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-  put('pages', { id: pageId, title: `Recovered changes · ${stamp}`, location: { kind: 'inbox' }, order: 0, width: PAGE_WIDTH, createdAt: now, updatedAt: now, trashedAt: null })
+  put('pages', { id: pageId, title: `Recovered changes · ${stamp}`, location: { kind: 'inbox' }, order: 0, width: PAGE_WIDTH, categoryIds: [], tagIds: [], copiedFrom: null, createdAt: now, updatedAt: now, trashedAt: null })
   const textW = 720
   let y = 48
   let z = 1

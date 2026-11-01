@@ -1,6 +1,7 @@
 import { unzip, zip, type AsyncZippable, type Unzipped } from 'fflate'
+import { isDateOnly } from '../domain/dates'
 import { validateRichTextDoc } from '../domain/richtext'
-import { FORMAT_VERSION, type AttachmentMeta, type CanvasObject, type WorkspaceRecords } from '../domain/types'
+import { FORMAT_VERSION, PROJECT_STATUSES, type AttachmentMeta, type CanvasObject, type WorkspaceRecords } from '../domain/types'
 
 /**
  * Full-workspace backup archive (ZIP):
@@ -32,7 +33,8 @@ export interface Manifest {
   app: { name: string; version: string }
   createdAt: string
   workspaceId: string
-  counts: { notebooks: number; sections: number; pages: number; objects: number; attachments: number }
+  /** Format 2 adds projects, categories, and tags. */
+  counts: { projects?: number; categories?: number; tags?: number; notebooks: number; sections: number; pages: number; objects: number; attachments: number }
   records: { path: string; size: number; sha256: string }
   files: ManifestFile[]
 }
@@ -42,8 +44,10 @@ export interface BackupSummary {
   appVersion: string
   formatVersion: number
   workspaceId: string
-  counts: Manifest['counts']
+  counts: Required<Manifest['counts']>
   trashedPages: number
+  archivedProjects: number
+  trashedProjects: number
   attachmentBytes: number
 }
 
@@ -96,13 +100,7 @@ export async function buildArchive(records: WorkspaceRecords, blobs: Map<string,
     app: { name: 'Minty Notes', version: appVersion },
     createdAt: new Date().toISOString(),
     workspaceId: records.workspace.workspaceId,
-    counts: {
-      notebooks: records.notebooks.length,
-      sections: records.sections.length,
-      pages: records.pages.length,
-      objects: records.objects.length,
-      attachments: records.attachments.length,
-    },
+    counts: countsOf(records),
     records: { path: RECORDS, size: recordsBytes.byteLength, sha256: await sha256Hex(recordsBytes) },
     files,
   }
@@ -111,13 +109,26 @@ export async function buildArchive(records: WorkspaceRecords, blobs: Map<string,
   entries[README] = [
     encoder.encode(
       `Minty Notes full workspace backup\nCreated: ${manifest.createdAt}\n\n` +
-        `Restore it from Minty Notes → Settings → Restore. records.json holds notes, notebooks,\n` +
-        `sections, and page layout. attachments/ holds the original image files.\n` +
+        `Restore it from Minty Notes → Settings → Restore. records.json holds projects, categories,\n` +
+        `tags, notes, notebooks, sections, links, and page layout. attachments/ holds the original image files.\n` +
         `This is a complete working copy, not a redacted document for sharing.\n`,
     ),
     { level: 6 },
   ]
   return zipAsync(entries)
+}
+
+function countsOf(records: WorkspaceRecords): Required<Manifest['counts']> {
+  return {
+    projects: records.projects.length,
+    categories: records.categories.length,
+    tags: records.tags.length,
+    notebooks: records.notebooks.length,
+    sections: records.sections.length,
+    pages: records.pages.length,
+    objects: records.objects.length,
+    attachments: records.attachments.length,
+  }
 }
 
 // ------------------------------------------------------------------ parsing
@@ -216,43 +227,101 @@ function checkCommon(c: Checker, kind: string, r: unknown, i: number): r is Obj 
   return c.require(isId(o.id) && isTime(o.createdAt) && isTime(o.updatedAt), `${kind} #${i + 1} has a missing or invalid id or timestamp.`)
 }
 
+const isIdList = (v: unknown): v is string[] => Array.isArray(v) && v.every(isId)
+
 function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
   if (!c.require(isObj(raw), 'records.json does not contain a records object.')) return null
   const r = raw as Obj
-  const lists = ['notebooks', 'sections', 'pages', 'objects', 'attachments'] as const
+  const lists = ['projects', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'objects', 'attachments'] as const
   for (const key of lists) if (!c.require(Array.isArray(r[key]), `records.json is missing the ${key} list.`)) return null
   const ws = r.workspace
   if (!c.require(isObj(ws) && isId(ws.workspaceId) && isNum(ws.formatVersion) && isTime(ws.createdAt), 'Workspace information is missing or invalid.')) return null
 
   const ids = new Set<string>()
   const unique = (kind: string, id: string) => c.require(!ids.has(id), `Duplicate ${kind} id ${id}.`) && ids.add(id)
+  const idsOf = (list: unknown[]) => new Set(list.filter(isObj).map((x) => x.id))
+
+  const categories = r.categories as unknown[]
+  categories.forEach((x, i) => {
+    if (checkCommon(c, 'Category', x, i) && c.require(isStr(x.name) && isNum(x.order), `Category #${i + 1} is invalid.`)) unique('category', x.id as string)
+  })
+  const categoryIds = idsOf(categories)
+  const checkCategories = (kind: string, name: unknown, v: unknown) => {
+    if (!c.require(isIdList(v), `${kind} “${String(name)}” has an invalid category list.`)) return false
+    for (const id of v as string[]) c.require(categoryIds.has(id), `${kind} “${String(name)}” refers to a missing category.`)
+    return true
+  }
+
+  const tags = r.tags as unknown[]
+  tags.forEach((x, i) => {
+    if (checkCommon(c, 'Tag', x, i) && c.require(isStr(x.name), `Tag #${i + 1} is invalid.`)) unique('tag', x.id as string)
+  })
+  const tagIds = idsOf(tags)
 
   const notebooks = r.notebooks as unknown[]
   notebooks.forEach((n, i) => {
-    if (checkCommon(c, 'Notebook', n, i) && c.require(isStr(n.title) && isNum(n.order), `Notebook #${i + 1} is invalid.`)) unique('notebook', n.id as string)
+    if (checkCommon(c, 'Notebook', n, i) && c.require(isStr(n.title) && isNum(n.order), `Notebook #${i + 1} is invalid.`) && checkCategories('Notebook', n.title, n.categoryIds)) unique('notebook', n.id as string)
   })
-  const notebookIds = new Set(notebooks.filter(isObj).map((n) => n.id))
+  const notebookIds = idsOf(notebooks)
 
   const sections = r.sections as unknown[]
   sections.forEach((s, i) => {
-    if (checkCommon(c, 'Section', s, i) && c.require(isStr(s.title) && isNum(s.order) && isId(s.notebookId), `Section #${i + 1} is invalid.`)) {
+    if (checkCommon(c, 'Section', s, i) && c.require(isStr(s.title) && isNum(s.order) && isId(s.notebookId), `Section #${i + 1} is invalid.`) && checkCategories('Section', s.title, s.categoryIds)) {
       unique('section', s.id as string)
       c.require(notebookIds.has(s.notebookId), `Section “${s.title}” refers to a missing notebook.`)
     }
   })
-  const sectionIds = new Set(sections.filter(isObj).map((s) => s.id))
+  const sectionIds = idsOf(sections)
 
+  const projects = r.projects as unknown[]
   const pages = r.pages as unknown[]
+  const pageIds = idsOf(pages)
+  const isItemList = (v: unknown, keys: string[]) => Array.isArray(v) && v.every((x) => isObj(x) && isId(x.id) && keys.every((k) => isStr(x[k])))
+  projects.forEach((p, i) => {
+    if (!checkCommon(c, 'Project', p, i)) return
+    const ok =
+      isStr(p.name) &&
+      isStr(p.customer) &&
+      isStr(p.site) &&
+      isStr(p.jobNumber) &&
+      isStr(p.description) &&
+      PROJECT_STATUSES.includes(p.status as never) &&
+      (p.dueDate === null || isDateOnly(p.dueDate)) &&
+      isNum(p.order) &&
+      isItemList(p.contacts, ['name', 'role', 'phone', 'email']) &&
+      isItemList(p.equipment, ['name', 'detail']) &&
+      isItemList(p.software, ['name', 'detail']) &&
+      isItemList(p.fileLocations, ['label', 'value']) &&
+      (p.fileLocations as Obj[]).every((f) => f.kind === 'path' || f.kind === 'url') &&
+      isIdList(p.pinnedPageIds) &&
+      isIdList(p.hiddenPageIds) &&
+      (p.archivedAt === null || isTime(p.archivedAt)) &&
+      (p.trashedAt === null || isTime(p.trashedAt))
+    if (!c.require(ok, `Project #${i + 1} is invalid.`)) return
+    if (!checkCategories('Project', p.name, p.categoryIds)) return
+    unique('project', p.id as string)
+    for (const id of [...(p.pinnedPageIds as string[]), ...(p.hiddenPageIds as string[])]) {
+      c.require(pageIds.has(id), `Project “${p.name}” links to a missing page.`)
+    }
+  })
+  const projectIds = idsOf(projects)
+
   pages.forEach((p, i) => {
     if (!checkCommon(c, 'Page', p, i)) return
     const loc = p.location
     const locOk =
-      isObj(loc) && (loc.kind === 'inbox' || loc.kind === 'standalone' || (loc.kind === 'section' && isId(loc.sectionId)))
-    if (!c.require(isStr(p.title) && isNum(p.order) && isNum(p.width) && p.width > 0 && locOk && (p.trashedAt === null || isTime(p.trashedAt)), `Page #${i + 1} is invalid.`)) return
+      isObj(loc) &&
+      (loc.kind === 'inbox' || loc.kind === 'standalone' || (loc.kind === 'section' && isId(loc.sectionId)) || (loc.kind === 'project' && isId(loc.projectId)))
+    const from = p.copiedFrom
+    const fromOk = from === null || (isObj(from) && (from.pageId === null || isId(from.pageId)) && isStr(from.title) && isTime(from.at))
+    if (!c.require(isStr(p.title) && isNum(p.order) && isNum(p.width) && p.width > 0 && locOk && fromOk && isIdList(p.tagIds) && (p.trashedAt === null || isTime(p.trashedAt)), `Page #${i + 1} is invalid.`)) return
+    if (!checkCategories('Page', p.title, p.categoryIds)) return
     unique('page', p.id as string)
     if ((loc as Obj).kind === 'section') c.require(sectionIds.has((loc as Obj).sectionId), `Page “${p.title}” refers to a missing section.`)
+    if ((loc as Obj).kind === 'project') c.require(projectIds.has((loc as Obj).projectId), `Page “${p.title}” refers to a missing project.`)
+    for (const id of p.tagIds as string[]) c.require(tagIds.has(id), `Page “${p.title}” refers to a missing tag.`)
+    if (isObj(from) && isId(from.pageId)) c.require(pageIds.has(from.pageId), `Page “${p.title}” was copied from a missing page.`)
   })
-  const pageIds = new Set(pages.filter(isObj).map((p) => p.id))
 
   const attachments = r.attachments as unknown[]
   attachments.forEach((a, i) => {
@@ -260,7 +329,7 @@ function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
     const o = a as Obj
     if (c.require(isStr(o.fileName) && isStr(o.mimeType) && isNum(o.size) && isStr(o.sha256), `Attachment #${i + 1} is invalid.`)) unique('attachment', o.id as string)
   })
-  const attachmentIds = new Set(attachments.filter(isObj).map((a) => a.id))
+  const attachmentIds = idsOf(attachments)
 
   const objects = r.objects as unknown[]
   objects.forEach((o, i) => {
@@ -308,6 +377,25 @@ function repairVersion1(raw: unknown, warnings: string[]): void {
 }
 
 /**
+ * Format 1 → 2 (Stage 2): add the empty projects/categories/tags lists and the
+ * new page/notebook/section fields. Nothing else changes: IDs, text, layout,
+ * attachments, and locations are kept as they were.
+ */
+export function migrateRecordsV1toV2(raw: unknown): void {
+  if (!isObj(raw)) return
+  for (const key of ['projects', 'categories', 'tags'] as const) if (raw[key] === undefined) raw[key] = []
+  const withCategories = (list: unknown) => (Array.isArray(list) ? list.map((x) => (isObj(x) && x.categoryIds === undefined ? { ...x, categoryIds: [] } : x)) : list)
+  raw.notebooks = withCategories(raw.notebooks)
+  raw.sections = withCategories(raw.sections)
+  if (Array.isArray(raw.pages)) {
+    raw.pages = raw.pages.map((p: unknown) =>
+      isObj(p) ? { ...p, categoryIds: p.categoryIds ?? [], tagIds: p.tagIds ?? [], copiedFrom: p.copiedFrom === undefined ? null : p.copiedFrom } : p,
+    )
+  }
+  if (isObj(raw.workspace) && raw.workspace.formatVersion === 1) raw.workspace = { ...raw.workspace, formatVersion: 2 }
+}
+
+/**
  * Fully validate an archive before anything is replaced: structure, version,
  * checksums, record shapes, rich text, and every relationship.
  */
@@ -338,7 +426,10 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
   const raw = parseJson(recordBytes, 'records.json', errors)
   if (errors.length) return { ok: false, errors }
 
-  if (m.formatVersion === 1) repairVersion1(raw, warnings)
+  if (m.formatVersion === 1) {
+    repairVersion1(raw, warnings)
+    migrateRecordsV1toV2(raw)
+  }
   const checker = new Checker(errors)
   const records = validateRecords(raw, checker)
   if (!records) return { ok: false, errors }
@@ -381,14 +472,10 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
       appVersion: isObj(m.app) && isStr(m.app.version) ? m.app.version : 'unknown',
       formatVersion: m.formatVersion,
       workspaceId: records.workspace.workspaceId,
-      counts: {
-        notebooks: records.notebooks.length,
-        sections: records.sections.length,
-        pages: records.pages.length,
-        objects: records.objects.length,
-        attachments: records.attachments.length,
-      },
+      counts: countsOf(records),
       trashedPages: records.pages.filter((p) => p.trashedAt).length,
+      archivedProjects: records.projects.filter((p) => p.archivedAt && !p.trashedAt).length,
+      trashedProjects: records.projects.filter((p) => p.trashedAt).length,
       attachmentBytes,
     },
   }

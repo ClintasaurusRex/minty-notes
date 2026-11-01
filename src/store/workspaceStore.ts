@@ -4,14 +4,20 @@ import {
   nowIso,
   type AttachmentMeta,
   type CanvasObject,
+  type Category,
   type Notebook,
   type Page,
   type PageLocation,
+  type Project,
   type RichTextDoc,
   type Section,
+  type Tag,
   type WorkspaceInfo,
   type WorkspaceRecords,
 } from '../domain/types'
+import { docToPlainText } from '../domain/richtext'
+import { isLinkedTo, keepExisting, ownerProjectId } from '../domain/references'
+import { normalize, type PageText } from '../domain/search'
 import { changeSetSize, describeStorageError, emptyChangeSet, type ChangeSet, type Repository } from '../storage/repository'
 import { PageHistory, type HistoryEntry, type ObjectChange } from './history'
 import { isIntendedChange, reconcileHeldChanges, type HeldChange, type ReconcileResult, type RecordKind } from './reconcile'
@@ -26,6 +32,9 @@ export interface SaveState {
 
 export interface WorkspaceData {
   workspace: WorkspaceInfo | null
+  projects: Record<string, Project>
+  categories: Record<string, Category>
+  tags: Record<string, Tag>
   notebooks: Record<string, Notebook>
   sections: Record<string, Section>
   pages: Record<string, Page>
@@ -63,7 +72,7 @@ export interface StoreOptions {
 }
 
 function emptyData(): WorkspaceData {
-  return { workspace: null, notebooks: {}, sections: {}, pages: {}, objects: {}, attachments: {}, lastChangeAt: null, revision: 0 }
+  return { workspace: null, projects: {}, categories: {}, tags: {}, notebooks: {}, sections: {}, pages: {}, objects: {}, attachments: {}, lastChangeAt: null, revision: 0 }
 }
 
 function byId<T extends { id: string }>(items: T[]): Record<string, T> {
@@ -166,9 +175,7 @@ export class WorkspaceStore {
     try {
       const index = await this.repo.loadIndex()
       this.committed.clear()
-      for (const n of index.notebooks) this.committed.set(`notebooks:${n.id}`, n)
-      for (const sec of index.sections) this.committed.set(`sections:${sec.id}`, sec)
-      for (const pg of index.pages) this.committed.set(`pages:${pg.id}`, pg)
+      for (const kind of INDEX_KINDS) for (const rec of index[kind]) this.committed.set(`${kind}:${rec.id}`, rec)
       this.histories.clear()
       this.textSession = null
       // Changes being written or still queued in this window stay visible on top of stored data.
@@ -189,6 +196,9 @@ export class WorkspaceStore {
         epoch: this.state.epoch + 1,
         data: {
           workspace: index.workspace,
+          projects: overlay(index.projects, (c) => c.projects),
+          categories: overlay(index.categories, (c) => c.categories),
+          tags: overlay(index.tags, (c) => c.tags),
           notebooks: overlay(index.notebooks, (c) => c.notebooks),
           sections: overlay(index.sections, (c) => c.sections),
           pages: overlay(index.pages, (c) => c.pages),
@@ -262,7 +272,19 @@ export class WorkspaceStore {
     const objects: Record<string, CanvasObject> = {}
     for (const pageId of pageIds) for (const o of await this.repo.loadPageObjects(pageId)) objects[o.id] = o
     const at = nowIso()
-    const result = reconcileHeldChanges(held, { notebooks: byId(index.notebooks), sections: byId(index.sections), pages: byId(index.pages), objects }, at)
+    const result = reconcileHeldChanges(
+      held,
+      {
+        projects: byId(index.projects),
+        categories: byId(index.categories),
+        tags: byId(index.tags),
+        notebooks: byId(index.notebooks),
+        sections: byId(index.sections),
+        pages: byId(index.pages),
+        objects,
+      },
+      at,
+    )
     if (changeSetSize(result.changes) > 0) {
       await this.repo.commit(result.changes, at, this.token)
       this.setState({ save: { status: 'saved', lastSavedAt: at, error: null } })
@@ -480,11 +502,11 @@ export class WorkspaceStore {
     return items.reduce((max, i) => Math.max(max, i.order), 0) + 1
   }
 
-  createNotebook(title: string): { notebook: Notebook; section: Section } {
+  createNotebook(title: string, categoryIds: string[] = []): { notebook: Notebook; section: Section } {
     this.assertWritable()
     const at = nowIso()
-    const notebook: Notebook = { id: newId(), title: title.trim() || 'Untitled notebook', order: this.nextOrder(Object.values(this.state.data.notebooks)), createdAt: at, updatedAt: at }
-    const section: Section = { id: newId(), notebookId: notebook.id, title: 'General', order: 1, createdAt: at, updatedAt: at }
+    const notebook: Notebook = { id: newId(), title: title.trim() || 'Untitled notebook', order: this.nextOrder(Object.values(this.state.data.notebooks)), categoryIds: [...categoryIds], createdAt: at, updatedAt: at }
+    const section: Section = { id: newId(), notebookId: notebook.id, title: 'General', order: 1, categoryIds: [], createdAt: at, updatedAt: at }
     this.setData({
       notebooks: { ...this.state.data.notebooks, [notebook.id]: notebook },
       sections: { ...this.state.data.sections, [section.id]: section },
@@ -545,7 +567,7 @@ export class WorkspaceStore {
     this.assertWritable()
     const at = nowIso()
     const siblings = Object.values(this.state.data.sections).filter((s) => s.notebookId === notebookId)
-    const section: Section = { id: newId(), notebookId, title: title.trim() || 'Untitled section', order: this.nextOrder(siblings), createdAt: at, updatedAt: at }
+    const section: Section = { id: newId(), notebookId, title: title.trim() || 'Untitled section', order: this.nextOrder(siblings), categoryIds: [], createdAt: at, updatedAt: at }
     this.setData({ sections: { ...this.state.data.sections, [section.id]: section } })
     this.markDirty('sections', section.id, section)
     return section
@@ -579,10 +601,13 @@ export class WorkspaceStore {
     const siblings = Object.values(this.state.data.pages).filter((p) => sameLocation(p.location, location))
     const page: Page = {
       id: newId(),
-      title: title ?? (location.kind === 'section' ? 'Untitled page' : quickNoteTitle()),
+      title: title ?? (location.kind === 'section' ? 'Untitled page' : location.kind === 'project' ? 'Untitled note' : quickNoteTitle()),
       location,
       order: this.nextOrder(siblings),
       width: PAGE_WIDTH,
+      categoryIds: [],
+      tagIds: [],
+      copiedFrom: null,
       createdAt: at,
       updatedAt: at,
       trashedAt: null,
@@ -623,12 +648,16 @@ export class WorkspaceStore {
     this.putPage({ ...p, trashedAt: nowIso() })
   }
 
-  /** Restore from trash. If its section no longer exists, it returns to the Inbox. */
+  /** Restore from trash. If its section or project is gone (or its project is in the Trash), it returns to the Inbox. */
   restorePage(id: string): void {
     this.assertWritable()
     const p = this.state.data.pages[id]
     if (!p || !p.trashedAt) return
-    const location: PageLocation = p.location.kind === 'section' && !this.state.data.sections[p.location.sectionId] ? { kind: 'inbox' } : p.location
+    const { sections, projects } = this.state.data
+    const orphaned =
+      (p.location.kind === 'section' && !sections[p.location.sectionId]) ||
+      (p.location.kind === 'project' && (!projects[p.location.projectId] || !!projects[p.location.projectId].trashedAt))
+    const location: PageLocation = orphaned ? { kind: 'inbox' } : p.location
     this.putPage({ ...p, location, trashedAt: null, updatedAt: nowIso() })
   }
 
@@ -645,6 +674,16 @@ export class WorkspaceStore {
     this.histories.delete(id)
     this.setData({ pages, objects: loaded })
     this.markDirty('pages', id, null)
+    // No project keeps a link to it, and copies only remember its title.
+    const at = nowIso()
+    for (const project of Object.values(this.state.data.projects)) {
+      if (project.pinnedPageIds.includes(id) || project.hiddenPageIds.includes(id)) {
+        this.putRecord('projects', { ...project, pinnedPageIds: project.pinnedPageIds.filter((x) => x !== id), hiddenPageIds: project.hiddenPageIds.filter((x) => x !== id), updatedAt: at })
+      }
+    }
+    for (const copy of Object.values(this.state.data.pages)) {
+      if (copy.copiedFrom?.pageId === id) this.putPage({ ...copy, copiedFrom: { ...copy.copiedFrom, pageId: null } })
+    }
   }
 
   /** Load a page's canvas objects (once) and return them. */
@@ -876,6 +915,276 @@ export class WorkspaceStore {
     return true
   }
 
+  // --------------------------------------------- projects & reusable knowledge
+
+  /** Write one index record (project, category, tag, notebook, section, page). */
+  private putRecord<K extends IndexKind>(kind: K, rec: WorkspaceData[K][string]): void {
+    this.setData({ [kind]: { ...this.state.data[kind], [rec.id]: rec } } as Partial<WorkspaceData>)
+    this.markDirty(kind, rec.id, rec as never)
+  }
+
+  private dropRecord(kind: IndexKind, id: string): void {
+    const next = { ...this.state.data[kind] }
+    delete next[id]
+    this.setData({ [kind]: next } as Partial<WorkspaceData>)
+    this.markDirty(kind, id, null)
+  }
+
+  createProject(fields: ProjectFields & { name: string }): Project {
+    this.assertWritable()
+    const project = newProject(fields, this.nextOrder(Object.values(this.state.data.projects)))
+    this.putRecord('projects', project)
+    return project
+  }
+
+  /** Change project details. Unchanged values are not written. */
+  updateProject(id: string, patch: ProjectFields): void {
+    this.assertWritable()
+    const p = this.state.data.projects[id]
+    if (!p) return
+    const next = { ...p, ...patch }
+    if (JSON.stringify(next) === JSON.stringify(p)) return
+    this.putRecord('projects', { ...next, updatedAt: nowIso() })
+  }
+
+  /** Archive keeps the complete project (notes, links, details) out of active lists. */
+  setProjectArchived(id: string, archived: boolean): void {
+    this.assertWritable()
+    const p = this.state.data.projects[id]
+    if (!p || !!p.archivedAt === archived) return
+    const at = nowIso()
+    this.putRecord('projects', { ...p, archivedAt: archived ? at : null, updatedAt: at })
+  }
+
+  /** Move a project (with its notes) to the Trash. Linked library pages are not touched. */
+  trashProject(id: string): void {
+    this.assertWritable()
+    const p = this.state.data.projects[id]
+    if (!p || p.trashedAt) return
+    const at = nowIso()
+    this.putRecord('projects', { ...p, trashedAt: at, updatedAt: at })
+  }
+
+  restoreProject(id: string): void {
+    this.assertWritable()
+    const p = this.state.data.projects[id]
+    if (!p || !p.trashedAt) return
+    this.putRecord('projects', { ...p, trashedAt: null, updatedAt: nowIso() })
+  }
+
+  /**
+   * Delete a trashed project forever. Its own notes are not lost: they move to
+   * the page Trash (restorable to the Inbox). Shared library pages it linked to
+   * are never affected. Returns how many notes moved to the Trash.
+   */
+  deleteProjectForever(id: string): number {
+    this.assertWritable()
+    if (!this.state.data.projects[id]) return 0
+    const at = nowIso()
+    let moved = 0
+    for (const page of Object.values(this.state.data.pages)) {
+      if (ownerProjectId(page) !== id) continue
+      this.putPage({ ...page, location: { kind: 'inbox' }, trashedAt: page.trashedAt ?? at, updatedAt: at })
+      moved++
+    }
+    this.dropRecord('projects', id)
+    return moved
+  }
+
+  /** Link a page to a project as a reference (the original page, not a copy). */
+  pinReference(projectId: string, pageId: string): void {
+    this.assertWritable()
+    const p = this.state.data.projects[projectId]
+    const page = this.state.data.pages[pageId]
+    if (!p || !page || ownerProjectId(page) === projectId) return
+    this.updateProject(projectId, {
+      pinnedPageIds: p.pinnedPageIds.includes(pageId) ? p.pinnedPageIds : [...p.pinnedPageIds, pageId],
+      hiddenPageIds: p.hiddenPageIds.filter((x) => x !== pageId),
+    })
+  }
+
+  unpinReference(projectId: string, pageId: string): void {
+    this.assertWritable()
+    const p = this.state.data.projects[projectId]
+    if (!p) return
+    this.updateProject(projectId, { pinnedPageIds: p.pinnedPageIds.filter((x) => x !== pageId) })
+  }
+
+  /** Hide a suggested or pinned reference from this project. The page itself is untouched. */
+  hideReference(projectId: string, pageId: string): void {
+    this.assertWritable()
+    const p = this.state.data.projects[projectId]
+    if (!p || !this.state.data.pages[pageId]) return
+    this.updateProject(projectId, {
+      pinnedPageIds: p.pinnedPageIds.filter((x) => x !== pageId),
+      hiddenPageIds: p.hiddenPageIds.includes(pageId) ? p.hiddenPageIds : [...p.hiddenPageIds, pageId],
+    })
+  }
+
+  unhideReference(projectId: string, pageId: string): void {
+    this.assertWritable()
+    const p = this.state.data.projects[projectId]
+    if (!p) return
+    this.updateProject(projectId, { hiddenPageIds: p.hiddenPageIds.filter((x) => x !== pageId) })
+  }
+
+  /**
+   * Make an independent project copy of a page: new page and object IDs, owned
+   * by the project. Image bytes are shared (they never change). The original is
+   * no longer listed as a linked reference in this project (unpinned or hidden),
+   * so the project shows its own copy instead.
+   */
+  async makeProjectCopy(projectId: string, pageId: string): Promise<Page> {
+    this.assertWritable()
+    const project = this.state.data.projects[projectId]
+    const source = this.state.data.pages[pageId]
+    if (!project || !source) throw new Error('The page or project no longer exists.')
+    const objects = Object.values(await this.ensurePageObjects(pageId))
+    this.assertWritable()
+    this.commitTextSession()
+    const at = nowIso()
+    const siblings = Object.values(this.state.data.pages).filter((p) => ownerProjectId(p) === projectId)
+    const copy: Page = {
+      ...source,
+      id: newId(),
+      location: { kind: 'project', projectId },
+      order: this.nextOrder(siblings),
+      categoryIds: [...source.categoryIds],
+      tagIds: [...source.tagIds],
+      copiedFrom: { pageId: source.id, title: source.title, at },
+      createdAt: at,
+      updatedAt: at,
+      trashedAt: null,
+    }
+    const copies: Record<string, CanvasObject> = {}
+    for (const o of objects) {
+      const c = { ...structuredClone(o), id: newId(), pageId: copy.id, createdAt: at, updatedAt: at } as CanvasObject
+      copies[c.id] = c
+    }
+    this.setData({ pages: { ...this.state.data.pages, [copy.id]: copy }, objects: { ...this.state.data.objects, [copy.id]: copies } })
+    this.markDirty('pages', copy.id, copy)
+    for (const c of Object.values(copies)) this.markDirty('objects', c.id, c)
+    const latest = this.state.data.projects[projectId]
+    if (latest.pinnedPageIds.includes(pageId)) this.unpinReference(projectId, pageId)
+    if (isLinkedTo(this.state.data.projects[projectId], source, this.state.data)) this.hideReference(projectId, pageId)
+    return copy
+  }
+
+  private findByName<T extends { name: string }>(items: Record<string, T>, name: string): T | undefined {
+    const key = normalize(name.trim())
+    return Object.values(items).find((i) => normalize(i.name.trim()) === key)
+  }
+
+  /** Create a system category, or return the existing one with the same name. */
+  createCategory(name: string): Category {
+    this.assertWritable()
+    const clean = name.trim() || 'Untitled category'
+    const existing = this.findByName(this.state.data.categories, clean)
+    if (existing) return existing
+    const at = nowIso()
+    const category: Category = { id: newId(), name: clean, order: this.nextOrder(Object.values(this.state.data.categories)), createdAt: at, updatedAt: at }
+    this.putRecord('categories', category)
+    return category
+  }
+
+  renameCategory(id: string, name: string): void {
+    this.assertWritable()
+    const c = this.state.data.categories[id]
+    const clean = name.trim()
+    if (!c || !clean || c.name === clean) return
+    this.putRecord('categories', { ...c, name: clean, updatedAt: nowIso() })
+  }
+
+  /** Delete a category and remove it from every notebook, section, page, and project. */
+  deleteCategory(id: string): void {
+    this.assertWritable()
+    if (!this.state.data.categories[id]) return
+    this.stripLabel('categoryIds', id)
+    this.dropRecord('categories', id)
+  }
+
+  createTag(name: string): Tag {
+    this.assertWritable()
+    const clean = name.trim().replace(/^#/, '') || 'tag'
+    const existing = this.findByName(this.state.data.tags, clean)
+    if (existing) return existing
+    const at = nowIso()
+    const tag: Tag = { id: newId(), name: clean, createdAt: at, updatedAt: at }
+    this.putRecord('tags', tag)
+    return tag
+  }
+
+  renameTag(id: string, name: string): void {
+    this.assertWritable()
+    const t = this.state.data.tags[id]
+    const clean = name.trim().replace(/^#/, '')
+    if (!t || !clean || t.name === clean) return
+    this.putRecord('tags', { ...t, name: clean, updatedAt: nowIso() })
+  }
+
+  deleteTag(id: string): void {
+    this.assertWritable()
+    if (!this.state.data.tags[id]) return
+    this.stripLabel('tagIds', id)
+    this.dropRecord('tags', id)
+  }
+
+  private stripLabel(field: 'categoryIds' | 'tagIds', id: string): void {
+    const at = nowIso()
+    const kinds: LabelTarget[] = field === 'tagIds' ? ['pages'] : ['notebooks', 'sections', 'pages', 'projects']
+    for (const kind of kinds) {
+      for (const rec of Object.values(this.state.data[kind]) as (Notebook | Section | Page | Project)[]) {
+        const ids = (rec as unknown as Record<string, string[]>)[field]
+        if (ids.includes(id)) this.putRecord(kind, { ...rec, [field]: ids.filter((x) => x !== id), updatedAt: at } as never)
+      }
+    }
+  }
+
+  /** Set the system categories of a notebook, section, page, or project (existing categories only). */
+  setCategories(kind: LabelTarget, id: string, categoryIds: string[]): void {
+    this.assertWritable()
+    const rec = this.state.data[kind][id] as Notebook | Section | Page | Project | undefined
+    if (!rec) return
+    const ids = keepExisting([...new Set(categoryIds)], (c) => !!this.state.data.categories[c])
+    if (JSON.stringify(ids) === JSON.stringify(rec.categoryIds)) return
+    this.putRecord(kind, { ...rec, categoryIds: ids, updatedAt: nowIso() } as never)
+  }
+
+  setPageTags(pageId: string, tagIds: string[]): void {
+    this.assertWritable()
+    const p = this.state.data.pages[pageId]
+    if (!p) return
+    const ids = keepExisting([...new Set(tagIds)], (t) => !!this.state.data.tags[t])
+    if (JSON.stringify(ids) === JSON.stringify(p.tagIds)) return
+    this.putPage({ ...p, tagIds: ids, updatedAt: nowIso() })
+  }
+
+  /**
+   * Plain text and image attachments of every page, for local search. Stored
+   * objects are read once; pages open in this window use their in-memory
+   * (possibly not yet saved) version.
+   */
+  async loadSearchTexts(): Promise<Map<string, PageText>> {
+    const byPage = new Map<string, CanvasObject[]>()
+    for (const o of await this.repo.loadAllObjects()) {
+      const list = byPage.get(o.pageId)
+      if (list) list.push(o)
+      else byPage.set(o.pageId, [o])
+    }
+    for (const [pageId, objects] of Object.entries(this.state.data.objects)) byPage.set(pageId, Object.values(objects))
+    const texts = new Map<string, PageText>()
+    for (const [pageId, objects] of byPage) {
+      const sorted = [...objects].sort((a, b) => a.y - b.y || a.x - b.x)
+      const text = sorted
+        .filter((o) => o.type === 'text')
+        .map((o) => docToPlainText(o.doc))
+        .join('\n')
+      const attachmentIds = sorted.filter((o) => o.type === 'image').map((o) => o.attachmentId)
+      texts.set(pageId, { text, attachmentIds })
+    }
+    return texts
+  }
+
   // ----------------------------------------------------------- attachments
 
   /** Store attachment bytes first; only then may an object reference it. */
@@ -893,5 +1202,38 @@ export class WorkspaceStore {
 export function sameLocation(a: PageLocation, b: PageLocation): boolean {
   if (a.kind !== b.kind) return false
   if (a.kind === 'section' && b.kind === 'section') return a.sectionId === b.sectionId
+  if (a.kind === 'project' && b.kind === 'project') return a.projectId === b.projectId
   return true
+}
+
+const INDEX_KINDS = ['projects', 'categories', 'tags', 'notebooks', 'sections', 'pages'] as const
+type IndexKind = (typeof INDEX_KINDS)[number]
+type LabelTarget = 'notebooks' | 'sections' | 'pages' | 'projects'
+
+export type ProjectFields = Partial<Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'order' | 'archivedAt' | 'trashedAt'>>
+
+export function newProject(fields: ProjectFields & { name: string }, order: number, at = nowIso()): Project {
+  return {
+    id: newId(),
+    customer: '',
+    site: '',
+    jobNumber: '',
+    status: 'active',
+    dueDate: null,
+    description: '',
+    contacts: [],
+    equipment: [],
+    software: [],
+    fileLocations: [],
+    categoryIds: [],
+    pinnedPageIds: [],
+    hiddenPageIds: [],
+    ...fields,
+    name: fields.name.trim() || 'Untitled project',
+    order,
+    archivedAt: null,
+    trashedAt: null,
+    createdAt: at,
+    updatedAt: at,
+  }
 }
