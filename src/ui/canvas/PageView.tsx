@@ -235,6 +235,7 @@ export function PageView({ pageId, onLeave }: { pageId: string; onLeave: () => v
     registerEditor,
     onTextFocus: (id) => {
       setSelectedId(id)
+      if (focusRequest?.id === id) setFocusRequest(null)
       if (!readOnly) store.beginTextSession(pageId, id)
     },
     onTextBlur: (id, empty) => {

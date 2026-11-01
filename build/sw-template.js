@@ -33,8 +33,8 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return
   if (request.mode === 'navigate') {
     // App shell: cached index first so the app opens offline.
-    event.respondWith(caches.open(CACHE).then((cache) => cache.match(INDEX)).then((hit) => hit || fetch(request)))
+    event.respondWith(caches.open(CACHE).then((cache) => cache.match(INDEX, { ignoreVary: true })).then((hit) => hit || fetch(request)))
     return
   }
-  event.respondWith(caches.open(CACHE).then((cache) => cache.match(request, { ignoreSearch: true })).then((hit) => hit || fetch(request)))
+  event.respondWith(caches.open(CACHE).then((cache) => cache.match(request, { ignoreSearch: true, ignoreVary: true })).then((hit) => hit || fetch(request)))
 })

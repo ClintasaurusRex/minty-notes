@@ -58,6 +58,32 @@ export interface BackupServiceOptions {
   download?: (bytes: Uint8Array, fileName: string) => void
   /** Called after a restore replaced the workspace. */
   onRestored?: () => void
+  /**
+   * Marks the moment the saved folder handle is read back from storage. If that
+   * read ever takes the page down, the next start skips it (no crash loop).
+   */
+  crashGuard?: { isSet(): boolean; set(on: boolean): void }
+}
+
+const GUARD_KEY = 'minty:reading-backup-folder'
+
+/** Per-tab marker in sessionStorage; it survives a reload of the same tab. */
+export const sessionCrashGuard = {
+  isSet(): boolean {
+    try {
+      return sessionStorage.getItem(GUARD_KEY) === '1'
+    } catch {
+      return false
+    }
+  },
+  set(on: boolean): void {
+    try {
+      if (on) sessionStorage.setItem(GUARD_KEY, '1')
+      else sessionStorage.removeItem(GUARD_KEY)
+    } catch {
+      // Without sessionStorage the guard is simply inactive.
+    }
+  },
 }
 
 export type BackupResult = { ok: true; fileName: string } | { ok: false; message: string }
@@ -85,6 +111,7 @@ export class BackupService {
       keep: 10,
       pickFolder,
       folderSupported: isFolderBackupSupported(),
+      crashGuard: sessionCrashGuard,
       download: () => {
         throw new Error('Downloads are not available here.')
       },
@@ -124,18 +151,37 @@ export class BackupService {
   }
 
   async init(): Promise<void> {
-    const [status, folder, safeguard] = await Promise.all([
+    const [status, safeguard] = await Promise.all([
       this.repo.getSetting<BackupStatusRecord>(SETTINGS.backupStatus),
-      this.repo.getSetting<FolderRecord>(SETTINGS.backupFolder),
       this.repo.getSetting<SafeguardRecord>(SETTINGS.safeguard),
     ])
-    this.folder = folder ?? null
     this.set({
       status: status ?? this.state.status,
-      folderName: folder?.name ?? null,
       safeguard: safeguard ? { createdAt: safeguard.createdAt, fileName: safeguard.fileName, size: safeguard.size, folderFileName: safeguard.folderFileName } : null,
     })
+    const folder = await this.readSavedFolder()
+    this.folder = folder ?? null
+    this.set({ folderName: folder?.name ?? null })
     await this.refreshPermission()
+  }
+
+  private async readSavedFolder(): Promise<FolderRecord | undefined> {
+    const guard = this.opts.crashGuard
+    if (guard.isSet()) {
+      // The last attempt in this tab never finished: forget the handle.
+      guard.set(false)
+      await this.repo.deleteSetting(SETTINGS.backupFolder).catch(() => undefined)
+      await this.recordError('The browser could not reopen the saved backup folder, so it was forgotten. Choose the backup folder again.')
+      return undefined
+    }
+    guard.set(true)
+    try {
+      return await this.repo.getSetting<FolderRecord>(SETTINGS.backupFolder)
+    } catch {
+      return undefined
+    } finally {
+      guard.set(false)
+    }
   }
 
   /** Re-check folder permission without prompting. */

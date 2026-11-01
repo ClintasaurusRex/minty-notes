@@ -292,3 +292,31 @@ describe('backup folder snapshots (simulated directory handle)', () => {
     expect(count()).toBe(2)
   })
 })
+
+describe('saved folder crash guard', () => {
+  it('forgets the saved folder if reading it never finished in this tab', async () => {
+    const src = await sampleWorkspace()
+    const dir = new FakeDir()
+    const first = serviceFor(src.store, dir)
+    await first.service.init()
+    await first.service.chooseFolder()
+    expect(first.service.getState().folderName).toBe('Dropbox Backups')
+
+    let marker = true // as if the previous read crashed the page
+    const guarded = new BackupService(src.store, {
+      appVersion: 'test',
+      folderSupported: true,
+      crashGuard: { isSet: () => marker, set: (on) => (marker = on) },
+    })
+    await guarded.init()
+    expect(guarded.getState().folderState).toBe('none')
+    expect(guarded.getState().status.lastError?.message).toMatch(/Choose the backup folder again/)
+    expect(marker).toBe(false)
+
+    // A normal start afterwards reads settings without the stale handle.
+    const normal = new BackupService(src.store, { appVersion: 'test', folderSupported: true, crashGuard: { isSet: () => false, set: () => undefined } })
+    await normal.init()
+    expect(normal.getState().folderName).toBeNull()
+  })
+})
+

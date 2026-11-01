@@ -1,10 +1,16 @@
-import { EditorContent, useEditor } from '@tiptap/react'
+import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useServices } from '../../app/context'
 import { richTextExtensions } from '../../domain/richtext'
 import type { RichTextDoc, TextObject } from '../../domain/types'
 import { useCanvas } from './CanvasContext'
 import { ObjectFrame } from './ObjectFrame'
+
+/** Focus synchronously (TipTap defers focus a frame), so the next keystroke lands in the text. */
+function focusEnd(editor: Editor): void {
+  editor.view.focus()
+  editor.commands.focus('end')
+}
 
 /** A movable, width-resizable rich-text container. Height follows the content. */
 export function TextBox({ obj }: { obj: TextObject }) {
@@ -83,7 +89,7 @@ export function TextBox({ obj }: { obj: TextObject }) {
   }, [editor, obj.doc])
 
   useEffect(() => {
-    if (focusRequest?.id === id && !editor.isFocused) editor.commands.focus('end')
+    if (focusRequest?.id === id && !editor.isFocused) focusEnd(editor)
   }, [editor, focusRequest, id])
 
   // The stored height follows the rendered text (used for page height and placement).
@@ -95,7 +101,7 @@ export function TextBox({ obj }: { obj: TextObject }) {
   }, [frame, store, pageId, id])
 
   return (
-    <ObjectFrame obj={obj} handles={['w', 'e']} label="Text box" bodyDrag={false} frameRef={setFrame} onEnter={() => editor.commands.focus('end')}>
+    <ObjectFrame obj={obj} handles={['w', 'e']} label="Text box" bodyDrag={false} frameRef={setFrame} onEnter={() => focusEnd(editor)}>
       <EditorContent editor={editor} className="obj-text-body" />
     </ObjectFrame>
   )
