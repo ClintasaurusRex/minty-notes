@@ -279,6 +279,8 @@ Claude Code usage expires November 5. More than $80 was available when discussed
 
 Prioritize completed, recoverable stages. Notebook editing and reliable storage come before integrations and desktop packaging. Record progress and next actions in the repository so a later session can resume without reconstructing decisions.
 
+Before every build or follow-up prompt, provide an effort recommendation and say whether to use the current Claude Code conversation or a fresh one, with a brief reason. Reassess based on the actual task instead of automatically selecting maximum effort. Keep related fixes and checks together. Prefer a fresh build conversation after a completed milestone has saved its code and progress notes, selecting the branch containing that work. Keep this Codex planning/review conversation for coordination. The handoff includes initial recommendations for each planned prompt.
+
 ## Remaining implementation choices
 
 No further product answers are required to start the planned prototype. Resolve these through implementation evidence:
