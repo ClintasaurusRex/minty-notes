@@ -25,6 +25,10 @@ function writePref(key: string, value: string | null): void {
   }
 }
 
+function isNarrow(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 760px)').matches
+}
+
 const RAIL: { id: NavSection; label: string; Icon: typeof IconInbox }[] = [
   { id: 'inbox', label: 'Inbox', Icon: IconInbox },
   { id: 'notes', label: 'Notes', Icon: IconNote },
@@ -187,11 +191,12 @@ export function App() {
   const epoch = useWorkspace((s) => s.epoch)
   const [section, setSection] = useState<NavSection>(() => (readPref('section') as NavSection | null) ?? 'inbox')
   const [pageId, setPageId] = useState<string | null>(() => readPref('page'))
-  const [navOpen, setNavOpen] = useState(true)
+  const [navOpen, setNavOpen] = useState(() => !isNarrow())
 
   const openPage = (id: string) => {
     setPageId(id)
     writePref('page', id)
+    if (isNarrow()) setNavOpen(false)
     if (section === 'settings' || section === 'trash') {
       setSection('inbox')
       writePref('section', 'inbox')
@@ -200,12 +205,15 @@ export function App() {
   const go = (s: NavSection) => {
     setSection(s)
     writePref('section', s)
+    // On a phone-sized screen the page list overlays the page; show it when switching lists.
+    if (isNarrow() && s !== 'settings') setNavOpen(true)
   }
 
   const quickNote = () => {
     try {
       const page = store.createPage({ kind: 'inbox' })
       go('inbox')
+      if (isNarrow()) setNavOpen(false)
       setPageId(page.id)
       writePref('page', page.id)
     } catch (err) {

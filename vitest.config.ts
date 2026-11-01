@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config'
 
 // Unit and integration tests run in Node with fake-indexeddb.
-// Files needing a DOM opt in with `// @vitest-environment jsdom`.
+// Rich-text validation uses the ProseMirror schema, which needs no DOM.
 export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify('test') },
   test: {

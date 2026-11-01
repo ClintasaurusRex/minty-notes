@@ -646,6 +646,8 @@ button.pill {
   opacity: 0;
   transition: opacity 0.1s;
   touch-action: none;
+  /* Hidden grips must not catch clicks meant for the content above them. */
+  pointer-events: none;
 }
 .obj-grip span {
   width: 28px;
@@ -657,6 +659,7 @@ button.pill {
 .obj-text:focus-within .obj-grip,
 .obj-text.is-selected .obj-grip {
   opacity: 1;
+  pointer-events: auto;
 }
 .obj-image {
   cursor: move;
