@@ -176,6 +176,15 @@ test('VTScada job: references, files, tasks, note links, templates, archive, bac
   await expect(page.getByTestId('task-editor').getByLabel('Task title')).toHaveValue('Factory acceptance test')
   await page.keyboard.press('Escape')
 
+  // Search finds tasks by their details and opens them on the board.
+  await page.getByTestId('rail-search').click()
+  await page.getByLabel('Search', { exact: true }).fill('map priorities')
+  await expect(page.getByTestId('search-results')).toContainText('Configure alarm list')
+  await expect(page.getByTestId('search-results')).toContainText('Task')
+  await page.getByTestId('search-results').locator('.result').first().click()
+  await expect(page.getByTestId('task-editor').getByLabel('Task title')).toHaveValue('Configure alarm list')
+  await page.keyboard.press('Escape')
+
   // Home lists overdue and upcoming tasks and the project's next task.
   await page.getByTestId('rail-home').click()
   await expect(page.getByTestId('home-due-tasks')).toContainText('Configure alarm list')

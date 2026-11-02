@@ -1960,3 +1960,17 @@ kbd {
     padding: 7px 10px;
   }
 }
+a.btn {
+  text-decoration: none;
+}
+.filters .btn,
+.filters .check {
+  align-self: center;
+}
+.task-editor .btn-row {
+  align-items: center;
+}
+.kind-task {
+  background: var(--warn-soft);
+  color: var(--warn);
+}

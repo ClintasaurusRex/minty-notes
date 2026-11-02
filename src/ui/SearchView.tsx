@@ -7,7 +7,7 @@ import { IconSearch } from './icons'
 import { useNav } from './nav'
 import { notify } from './notices'
 
-const KINDS: SearchKind[] = ['project', 'project-note', 'reference', 'note', 'attachment']
+const KINDS: SearchKind[] = ['project', 'project-note', 'reference', 'note', 'task', 'attachment']
 
 export function SearchView() {
   const { store } = useServices()
@@ -47,7 +47,7 @@ export function SearchView() {
       <h1>Search</h1>
       <div className="search-box">
         <IconSearch size={18} />
-        <input type="search" aria-label="Search" placeholder="Projects, notes, tags, attachment names…" value={query} autoFocus onChange={(e) => setQuery(e.target.value)} />
+        <input type="search" aria-label="Search" placeholder="Projects, notes, tasks, tags, attachment names…" value={query} autoFocus onChange={(e) => setQuery(e.target.value)} />
       </div>
       <div className="search-filters" role="group" aria-label="Filters">
         <div className="kind-toggles" role="group" aria-label="Result types">
@@ -116,7 +116,7 @@ export function SearchView() {
           <ul className="search-results" data-testid="search-results">
             {results.slice(0, 200).map((r) => (
               <li key={`${r.kind}:${r.key}`}>
-                <button type="button" className="result" onClick={() => (r.pageId ? nav.openPage(r.pageId, r.projectId) : nav.openProject(r.projectId))}>
+                <button type="button" className="result" onClick={() => (r.pageId ? nav.openPage(r.pageId, r.projectId) : r.taskId ? nav.openProject(r.projectId, { tab: 'tasks', taskId: r.taskId }) : nav.openProject(r.projectId))}>
                   <span className="result-top">
                     <span className={`badge kind-${r.kind}`}>{SEARCH_KIND_LABELS[r.kind]}</span>
                     <span className="result-title">{r.title}</span>

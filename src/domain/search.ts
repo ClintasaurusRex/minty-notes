@@ -1,18 +1,19 @@
 import { isLibraryPage, isLinkedTo, isPageVisible, ownerProjectId, pageCategoryIds, type LibraryData } from './references'
-import type { AttachmentMeta, Page, Project, Tag } from './types'
+import type { AttachmentMeta, Page, Project, Tag, Task } from './types'
 
 /**
  * Local search over project details, page titles and text, tags, categories,
- * and attachment names. Everything runs in memory on this device.
+ * task titles and details, and attachment names. Everything runs in memory on this device.
  */
 
-export type SearchKind = 'project' | 'project-note' | 'reference' | 'note' | 'attachment'
+export type SearchKind = 'project' | 'project-note' | 'reference' | 'note' | 'task' | 'attachment'
 
 export const SEARCH_KIND_LABELS: Record<SearchKind, string> = {
   project: 'Project',
   'project-note': 'Project note',
   reference: 'Reference page',
   note: 'Note',
+  task: 'Task',
   attachment: 'Attachment',
 }
 
@@ -24,6 +25,8 @@ export interface PageText {
 
 export interface SearchData extends LibraryData {
   tags: Record<string, Tag>
+  /** Optional so callers without tasks (older tests) still work. */
+  tasks?: Record<string, Task>
   attachments: Record<string, AttachmentMeta>
 }
 
@@ -43,7 +46,7 @@ export const DEFAULT_FILTERS: SearchFilters = { project: 'all', category: 'all',
 
 export interface SearchResult {
   kind: SearchKind
-  /** Project ID, page ID, or `attachmentId:pageId`. */
+  /** Project ID, page ID, task ID, or `attachmentId:pageId`. */
   key: string
   title: string
   /** Where it lives (project name, notebook › section, Inbox…). */
@@ -51,6 +54,8 @@ export interface SearchResult {
   snippet: string
   pageId: string | null
   projectId: string | null
+  /** Set for task results (open it on its project's board). */
+  taskId?: string
   updatedAt: string
   score: number
 }
@@ -160,6 +165,24 @@ export function search(query: string, filters: SearchFilters, data: SearchData, 
       if (!m) continue
       const snippetText = m.snippetField?.text ?? [p.customer, p.site].filter(Boolean).join(' · ')
       results.push({ kind: 'project', key: p.id, title: p.name || 'Untitled project', context: p.archivedAt ? 'Archived project' : 'Project', snippet: makeSnippet(snippetText, tokens), pageId: null, projectId: p.id, updatedAt: p.updatedAt, score: m.score + 0.5 })
+    }
+  }
+
+  // Tasks (in projects that are not in the Trash; archived ones only on request)
+  if (wants('task') && filters.tag === 'all' && filters.project !== 'none' && tokens.length > 0) {
+    for (const t of Object.values(data.tasks ?? {})) {
+      const p = data.projects[t.projectId]
+      if (!p || !projectAllowed(p, filters)) continue
+      if (filterProject && p.id !== filterProject.id) continue
+      if (filters.category !== 'all' && !p.categoryIds.includes(filters.category)) continue
+      const m = scoreFields(tokens, [
+        { text: t.title, weight: 3 },
+        { text: t.description, weight: 1, snippet: true },
+        { text: p.name, weight: 1 },
+      ])
+      if (!m) continue
+      const status = { todo: 'To do', doing: 'Doing', done: 'Done' }[t.status]
+      results.push({ kind: 'task', key: t.id, title: t.title || 'Untitled task', context: `${p.name || 'Untitled project'} · ${status}`, snippet: makeSnippet(t.description, tokens), pageId: null, projectId: p.id, taskId: t.id, updatedAt: t.updatedAt, score: m.score })
     }
   }
 

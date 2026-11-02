@@ -105,3 +105,19 @@ describe('date-only due dates', () => {
     expect(todayDateOnly(new Date(2026, 0, 9, 23, 59))).toBe('2026-01-09')
   })
 })
+
+describe('task search', () => {
+  it('finds tasks by title and details, respecting project filters and Trash', async () => {
+    const { search, DEFAULT_FILTERS } = await import('./search')
+    const at = '2026-11-01T00:00:00.000Z'
+    const project = { id: 'p1', name: 'Riverside', customer: '', site: '', jobNumber: '', description: '', status: 'active', dueDate: null, contacts: [], equipment: [], software: [], fileLocations: [], categoryIds: [], pinnedPageIds: [], hiddenPageIds: [], order: 1, archivedAt: null, trashedAt: null, createdAt: at, updatedAt: at } as const
+    const other = { ...project, id: 'p2', name: 'Hillside', trashedAt: at }
+    const task = { id: 't1', projectId: 'p1', title: 'Configure alarm list', description: 'Map priorities per the standard', status: 'doing', priority: 'urgent', dueDate: null, linkedPageIds: [], order: 1, completedAt: null, createdAt: at, updatedAt: at } as const
+    const hidden = { ...task, id: 't2', projectId: 'p2' }
+    const data = { projects: { p1: project, p2: other }, categories: {}, notebooks: {}, sections: {}, pages: {}, tags: {}, attachments: {}, tasks: { t1: task, t2: hidden } }
+    const results = search('priorities', DEFAULT_FILTERS, data as never, new Map())
+    expect(results.map((r) => [r.kind, r.taskId, r.context])).toEqual([['task', 't1', 'Riverside · Doing']])
+    expect(search('alarm', { ...DEFAULT_FILTERS, project: 'p2' }, data as never, new Map())).toEqual([])
+    expect(search('alarm', { ...DEFAULT_FILTERS, kinds: ['note'] }, data as never, new Map())).toEqual([])
+  })
+})
