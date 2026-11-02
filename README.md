@@ -2,22 +2,26 @@
 
 A local-first notebook for technical projects and reusable knowledge, in the Minty charcoal-and-mint style. Notes, layouts, and screenshots stay in your browser on your computer — no account, server, or subscription.
 
-**Status:** Stages 0–2 — a working notebook with reliable local saving, backups, and offline use, plus projects, a reusable reference library, tags, search, and a home dashboard. Tasks, templates, and document import come in later stages. See `docs/PROGRESS.md`.
+**Status:** Stages 0–3 — a working notebook with reliable local saving, backups, and offline use; projects, a reusable reference library, tags, search, and a home dashboard; and task boards, a combined task list, task-to-note links, a project Files tab, and reusable templates. Document import, drawing tools, and PDF export come in Stage 4. See `docs/PROGRESS.md`.
 
 ## What it does now
 
-- **Home:** active projects, pinned references, recently edited project notes, and recently opened pages.
+- **Home:** active projects (with each one's next task), overdue and upcoming tasks, pinned references, recently edited project notes, recently opened pages, and “New from template”.
 - **Quick capture:** “Quick note” (or **Alt+N**) opens a new note in the Inbox. No project or notebook needed.
-- **Projects:** customer, site, job number, status, due date, contacts, equipment, software versions, saved file locations (paths to copy, web links to open), and several system categories. Project notes use the same page editor. Archive, Trash, and restore; deleting a project forever keeps its notes in the Trash and never touches shared library pages.
+- **Projects:** Overview, Tasks, and Files tabs. Customer, site, job number, status, due date, contacts, equipment, software versions, and several system categories. Project notes use the same page editor. Archive, Trash, and restore; deleting a project forever keeps its notes in the Trash and never touches shared library pages.
+- **Tasks:** a To do / Doing / Done board per project. Title, details, priority (Low / Normal / High / Urgent, shown with a label and symbol), and an optional date-only due date with overdue and due-soon markers. Move by drag-and-drop, the arrow buttons, or **Alt+←/→** (column) and **Alt+↑/↓** (order) on a focused task. Link tasks to existing notes (or create a linked note); a note shows which tasks link to it.
+- **All tasks:** the Tasks screen lists tasks across projects with status, priority, due-date, and project filters, sorting, and an “Include archived projects” switch. Click a task to open it on its project's board.
+- **Files tab:** saved local paths (copied with one click; browsers cannot open local folders) and web links such as Dropbox links (http/https only, opened in a new tab), each with a description. Only the location is stored.
+- **Templates:** “Save as template” on a page or a project; “New from template” on Home or in a project. Every use makes new, independent notes, tasks, and projects. Manage templates in Settings.
 - **Reference library:** give a notebook, section, or page a system category (e.g. VTScada). Projects with that category suggest those pages automatically. Pin extra pages or hide suggestions per project. Linked pages are the originals — an edit shows in every project, and the page says it is shared. **Make a project copy** creates an independent page instead.
-- **Tags and search:** tag pages; search project details, note titles and text, tags, categories, and attachment names, with project, category, tag, type, and archived filters. Everything is searched locally.
+- **Tags and search:** tag pages; search project details, note titles and text, task titles and details, tags, categories, and attachment names, with project, category, tag, type, and archived filters. Everything is searched locally.
 - **Organize:** standalone notes, or notebooks → sections → pages. Move pages anytime; links and IDs stay the same. Trash with restore.
 - **Freeform pages:** a 1,200 px page that grows downward. Add text boxes (double-click the page or “Text”) and images anywhere; move, resize, layer, duplicate.
 - **Screenshots:** take a screenshot, click the page, press **Ctrl+V**. Images can also be dropped in or picked from a file.
 - **Rich text:** headings, bold/italic/underline/strike, code, lists, quotes, links.
 - **Undo/redo:** Ctrl+Z / Ctrl+Shift+Z.
 - **Autosave:** the top bar always says Saved, Saving…, Unsaved changes, or Not saved (with retry).
-- **Backups:** choose a backup folder (Chrome/Edge), or download a backup ZIP. Backups include projects, links, categories, and tags. Restore checks the whole file first and keeps a safety copy of what it replaces. Older (Stage 1) backups still restore.
+- **Backups:** choose a backup folder (Chrome/Edge), or download a backup ZIP. Backups include projects, tasks, templates, links, categories, and tags. Restore checks the whole file first and keeps a safety copy of what it replaces. Older (Stage 1 and Stage 2) backups still restore.
 - **Offline:** after the first visit, the app opens without a connection.
 
 Keyboard shortcuts are listed in Settings.

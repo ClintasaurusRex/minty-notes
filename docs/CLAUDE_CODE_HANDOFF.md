@@ -56,6 +56,8 @@ Start a fresh build conversation at a clean milestone boundary once changes have
 
 > Continue with Stage 3. Implement To do / Doing / Done task boards, priorities, optional date-only deadlines, a combined task list, task-to-note links, local file paths, Dropbox web links, and reusable note/project templates. Exercise a realistic project workflow using synthetic example data. Verify that tasks retain their intended date and that keyboard users can move tasks without dragging. Preserve existing notes and backups, update progress notes, and stop after the checked milestone. Do not deploy.
 
+**Status (November 2, 2026):** Stage 3 is complete as app 0.3.0 on branch `claude/adoring-ptolemy-0i9dfu` (data format 3, IndexedDB 4). See `PROGRESS.md` for what was built, the checks run, and the real-Chrome manual checks still outstanding from Stages 2 and 3 — do those before starting Stage 4, and start Stage 4 from the branch that contains this work.
+
 ### Richer notes and document conversion
 
 **Effort:** Extra high (`xhigh`) if available; otherwise High. Editor interactions, annotations, and local document conversion introduce several coupled failure paths.
