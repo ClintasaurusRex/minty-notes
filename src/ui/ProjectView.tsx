@@ -255,7 +255,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
           </label>
           <label className="field inline">
             <span className="field-label">Due</span>
-            <input type="date" aria-label="Due date" value={project.dueDate ?? ''} readOnly={readOnly} onChange={(e) => set({ dueDate: e.target.value || null })} />
+            <input type="date" aria-label="Due date" max="9999-12-31" value={project.dueDate ?? ''} readOnly={readOnly} onChange={(e) => set({ dueDate: e.target.value || null })} />
           </label>
           {due && <span className={`pill due-${due.tone}`}>{due.text}</span>}
           <span className="spacer" />

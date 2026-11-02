@@ -1,6 +1,6 @@
 # Minty Notes — progress
 
-Last updated: November 1, 2026 · Branch: `claude/bold-mccarthy-ymvezs` (from `claude/great-gauss-e9zx88` at `3af576f`) · App version 0.2.0
+Last updated: November 2, 2026 · Branch: `claude/bold-mccarthy-ymvezs` (from `claude/great-gauss-e9zx88` at `3af576f`) · App version 0.2.1
 
 ## Status
 
@@ -54,6 +54,17 @@ Built in checked slices: data model + migrations → store/reconcile/backup wiri
 - **Wiring:** new record stores go through the same change sets, one-transaction autosave, owner-token fencing, revision counter, full backup/restore with validation, and held-edit reconciliation (ID lists merge as sets; dangling links are removed and reported in “Recovered changes”).
 - **Migrations:** IndexedDB 2 → 3 (and 1 → 2 → 3) and backup format 1 → 2, keeping every Stage 1 note, ID, attachment, timestamp, layout, and revision. The version-1 trashed-orphan repair still runs for old backups.
 
+### Stage 2 data-safety review (0.2.1)
+A focused review of shared references, project copies, archive/Trash/deletion, upgrade and backup compatibility, and two-window editing found four concrete defects. Each was reproduced first (isolated fake-indexeddb workspaces and, for the date field, real Chromium), fixed, and covered by a test that fails without the fix:
+1. **A mistyped due-date year made every later backup unrestorable.** Chrome's date field produced `20261-12-15` for a five-digit year; the store accepted it and restore validation then refused the whole backup (“Project #1 is invalid”). Years 0001–0099 (Chrome gives `0099-12-15` for a two-digit year) were also wrongly treated as invalid because `Date.UTC` maps them to 1900–1999. Fixed: correct date-only check for all four-digit years; the store ignores invalid due dates (the previous date stays); the field has `max="9999-12-31"`, which caps the year at four digits in Chrome; and a backup that already contains an invalid due date (possible from 0.2.0) restores with that date cleared and a warning.
+2. **A refused held project deletion still moved the project's notes to the Trash.** If window A deleted a project forever while it could not save, and window B then changed that project, taking editing back kept the project (correct) but applied A's “move notes to Trash” part, leaving a live project without its notes.
+3. **A refused held category or tag deletion still removed it from every record.** If B renamed the category/tag meanwhile, it was kept but stripped from all notebooks, sections, pages, and projects.
+4. **A refused held page deletion still emptied the page and cut its links.** If B renamed the page meanwhile, it was kept but its text boxes and images were deleted, its pins/hides in other projects were removed, and its project copies lost their source link. (The emptied-page part existed since Stage 1.)
+
+Fix for 2–4: `withoutRefusedCascades` in `src/store/reconcile.ts` predicts which held deletions will be refused (with the same rules as before) and drops only the side effects that belonged to them, before anything is merged. Deletions that are not refused behave as before.
+
+Checked and found sound (no change needed): shared-reference edits reaching every linked project; copy independence both ways; project deletion never touching library pages; deleting an original keeping its copy's text and image bytes (assertion added, through a full backup → clean restore); archive/Trash/restore record validity; Stage 1 database and backup upgrades; failed migration and invalid restore preserving the workspace; read-only windows refusing every Stage 2 change (test added); merges of unrelated changes and removal of dangling links.
+
 ## Verification
 
 | Check | Result | How |
@@ -61,15 +72,16 @@ Built in checked slices: data model + migrations → store/reconcile/backup wiri
 | Baseline at `3af576f` | ✅ | `npm ci`, build, lint, 61 unit tests, 15 browser tests all passed before any Stage 2 change |
 | `npm run build` (tsc + Vite) | ✅ | |
 | `npm run lint` | ✅ | |
-| `npm test` — 85 unit/integration tests | ✅ | 61 from Stage 1 (adapted to format 2) + 24 new, below |
+| `npm test` — 90 unit/integration tests | ✅ | 61 from Stage 1 (adapted to format 2) + 24 Stage 2 + 5 from the data-safety review (one Stage 2 test changed: an invalid due date is now repaired on restore instead of rejecting the backup) |
 | Migrations (`src/storage/db.test.ts`) | ✅ | DB 1 → 3: revision added, trashed orphan repaired, Stage 2 fields added. DB 2 → 3 with real Stage 1 records: same page/notebook/section IDs, titles, timestamps, object geometry, text, attachment bytes, and revision; Stage 2 features then work and the result backs up and restores. A migration failure (simulated failed write) aborts and leaves the version-2 database untouched |
-| Stage 2 proofs (`src/store/projects.test.ts`) | ✅ | **One shared reference updates across two projects** (suggested in one, pinned in the other; edit + reload; both resolve the same page and text). **An independent project copy remains unchanged** when the original is edited, and vice versa (new IDs, shared image bytes). Suggestions by notebook/section/page category; pin/hide/unhide. Archive, trash, restore, delete forever (notes to Trash, library page survives and stays linked elsewhere). Trashed and deleted sources leave no dangling links. Category/tag deletion. **Projects, details, links, copies, categories, tags, and attachments survive full backup → clean restore** (every record compared). Broken Stage 2 relationships are rejected. **Stage 1 (format 1) backups** restore with upgraded records |
-| Ownership and held edits (`src/store/heldProjects.test.ts`) | ✅ | Fencing refuses a stale project write. Held project edit + other window's rename both survive; pins and hides merge as sets. Conflicting field → other window's value kept, held value in “Recovered changes”. Note created for a project deleted elsewhere goes to the Inbox; edits to the deleted project are recovered, not resurrected. Pin to a page / category deleted elsewhere → link removed and reported. Held project deletion skipped when the other window added a note. Held project copy saved with its objects. Each ends with a validated backup that restores |
-| Search and dates (`src/domain/search.test.ts`) | ✅ | Project details, contacts, software versions, note text, tags, attachment names, accent-insensitive; project/category/tag/kind/archived filters; trashed items excluded; date-only due dates (no time-zone shift) |
-| `npm run test:e2e` — 18 browser tests | ✅ | 15 from Stage 1 (still passing; two expectations adapted to the new restore summary and Home start screen) + 3 new in `e2e/projects.spec.ts`, below |
+| Stage 2 proofs (`src/store/projects.test.ts`) | ✅ | **One shared reference updates across two projects** (suggested in one, pinned in the other; edit + reload; both resolve the same page and text). **An independent project copy remains unchanged** when the original is edited, and vice versa (new IDs, shared image bytes). Suggestions by notebook/section/page category; pin/hide/unhide. Archive, trash, restore, delete forever (notes to Trash, library page survives and stays linked elsewhere). Trashed and deleted sources leave no dangling links; after the original is deleted forever, a copy's text and image bytes survive backup → clean restore. Category/tag deletion. Invalid due dates are ignored by the store, and a backup containing one restores with a warning. **Projects, details, links, copies, categories, tags, and attachments survive full backup → clean restore** (every record compared). Broken Stage 2 relationships are rejected. **Stage 1 (format 1) backups** restore with upgraded records |
+| Ownership and held edits (`src/store/heldProjects.test.ts`) | ✅ | Fencing refuses a stale project write. Held project edit + other window's rename both survive; pins and hides merge as sets. Conflicting field → other window's value kept, held value in “Recovered changes”. Note created for a project deleted elsewhere goes to the Inbox; edits to the deleted project are recovered, not resurrected. Pin to a page / category deleted elsewhere → link removed and reported. Held project deletion skipped when the other window added a note. Held project copy saved with its objects. **0.2.1:** refused project, category/tag, and page deletions leave the kept record whole (notes stay in the project; assignments stay; content, pins, hides, and copies' source link stay); a read-only window refuses every Stage 2 change and writes nothing. Each ends with a validated backup that restores |
+| Search and dates (`src/domain/search.test.ts`) | ✅ | Project details, contacts, software versions, note text, tags, attachment names, accent-insensitive; project/category/tag/kind/archived filters; trashed items excluded; date-only due dates (no time-zone shift), including years 0001–0099 and rejecting five-digit years |
+| `npm run test:e2e` — 19 browser tests | ✅ | 15 from Stage 1 (still passing; two expectations adapted to the new restore summary and Home start screen) + 4 in `e2e/projects.spec.ts`, below |
 | Stage 2 browser workflow | ✅ | Real Chromium, production build: starter notebooks → library page → project A (category suggestion) and B (pinned) → edit from B, shown in A → **make a project copy** in A and change it → edit original again from B → **copy unchanged**, original changed → reload → tag + search with project filter |
 | Stage 2 browser recovery | ✅ | Project details, software, file location, category suggestion, project note with pasted screenshot and tag → archive/unarchive (Home and Archived list) → **download backup → restore in a separate clean browser context** → details, suggestion, text, tag, image SHA-256, search all match → trash → delete forever → note in Trash, shared library page intact |
 | Stage 2 two-window check | ✅ | A frozen window with failing writes edits a project field; B takes the lock and renames the project; A is read-only with the edit held (never written); A takes editing back: both changes kept |
+| Due-date regression (0.2.1) | ✅ | Real Chromium: a five-digit year typed digit by digit into the due-date field is capped at four digits; the downloaded backup passes restore validation in a clean context. Without the fixes the field stored `20261-12-15` (test fails) |
 | Visual check | ✅ (scripted) | Screenshots of Home, project overview, linked reference in a project, search, and a 390 px phone width; no console errors |
 | `npm audit --omit=dev` | ✅ 0 | No new dependencies were added in Stage 2 |
 
@@ -90,6 +102,7 @@ Stage 1 checks were reported passing by the user (see above). Remaining:
 5. Paste real screenshots (Win+Shift+S / Snipping Tool / Linux tool) into a project note; check size on a high-DPI display.
 6. Install/launch the installed app after the update (“Save and update” banner) and confirm it opens offline.
 7. Check that the 30-minute folder snapshots continue after the upgrade.
+8. If any project due date was entered with 0.2.0, open that project and check the date; a backup made by 0.2.0 that contains an invalid date will restore with that date cleared (the restore review lists it).
 
 ## Known limitations
 - Stage 1 limitations still apply: held changes live only in that window's memory; no character-level text merge; opening a page can save re-measured text heights; undo is per page and in memory; no multi-select, guides, snapping, alt-text editor, tables, checklists, shapes/annotation, document import, or PDF export; image bytes of deleted objects are kept; backups are built in memory; basic phone layout; folder backups need Chrome/Edge on a desktop and only run while the app is open; restore replaces the whole workspace.
@@ -100,6 +113,9 @@ Stage 1 checks were reported passing by the user (see above). Remaining:
 - Local file paths are copied, not opened (browsers cannot open arbitrary local paths). Dropbox links open in a new tab and need a connection.
 - A project copy shares image bytes with the original (bytes never change, so the pages stay independent).
 - Deleting a page forever also removes it from other projects' pins; there is no per-link history.
+- An invalid due date already stored by 0.2.0 stays in this browser's workspace until the date is changed; restores clear it (with a warning).
+- Two windows can each create a category or tag with the same name while one cannot save; both are kept (rename or delete one in Settings).
+- In a held-edit merge, a pin in one window and a hide of the same page in the other both survive; the page then shows as pinned.
 - Tasks, task boards, templates, and a Files tab are Stage 3. Portable project export is Stage 4.
 - JavaScript bundle is ~870 KB (≈275 KB gzip), cached after the first visit.
 

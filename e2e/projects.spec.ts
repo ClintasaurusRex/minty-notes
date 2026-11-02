@@ -252,3 +252,28 @@ test('a frozen window’s held project edits are merged safely when it takes edi
   await openProject(b, 'Plant (renamed in B)')
   await expect(b.getByLabel('Job number')).toHaveValue('J-HELD')
 })
+
+test('a mistyped year in the due date cannot make backups unrestorable', async ({ page, browser }, testInfo) => {
+  await page.goto('/')
+  await newProject(page, 'Typo project')
+  const due = page.getByLabel('Due date')
+  // Typed digit by digit in Chrome's real date field: month, day, then a five-digit year.
+  await due.click({ position: { x: 14, y: 12 } })
+  for (const key of '121520261') await page.keyboard.press(key)
+  await page.keyboard.press('Tab')
+  await expect(due).toHaveValue(/^\d{4}-12-15$/) // the year is capped at four digits
+  await waitSaved(page)
+
+  await page.getByTestId('rail-settings').click()
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Download backup' }).click()
+  const backupPath = testInfo.outputPath('due-date-backup.zip')
+  await (await downloadPromise).saveAs(backupPath)
+  const clean = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const fresh = await clean.newPage()
+  await fresh.goto('/')
+  await fresh.getByTestId('rail-settings').click()
+  await fresh.getByTestId('restore-file').setInputFiles(backupPath)
+  await expect(fresh.getByTestId('restore-review')).toContainText('passed every check')
+  await clean.close()
+})

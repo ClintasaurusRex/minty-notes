@@ -396,6 +396,23 @@ export function migrateRecordsV1toV2(raw: unknown): void {
 }
 
 /**
+ * App 0.2.0 stored any value Chrome's date field produced, including a
+ * five-digit year (e.g. `20261-12-15`), which this validation rejects. So a
+ * backup is not refused as a whole for that: an invalid due date is cleared,
+ * with a warning naming the project and the value.
+ */
+function repairDueDates(raw: unknown, warnings: string[]): void {
+  if (!isObj(raw) || !Array.isArray(raw.projects)) return
+  raw.projects = raw.projects.map((p: unknown) => {
+    if (isObj(p) && typeof p.dueDate === 'string' && !isDateOnly(p.dueDate)) {
+      warnings.push(`Project “${String(p.name)}” had an invalid due date (${p.dueDate}); it will be restored without a due date.`)
+      return { ...p, dueDate: null }
+    }
+    return p
+  })
+}
+
+/**
  * Fully validate an archive before anything is replaced: structure, version,
  * checksums, record shapes, rich text, and every relationship.
  */
@@ -430,6 +447,7 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
     repairVersion1(raw, warnings)
     migrateRecordsV1toV2(raw)
   }
+  repairDueDates(raw, warnings)
   const checker = new Checker(errors)
   const records = validateRecords(raw, checker)
   if (!records) return { ok: false, errors }

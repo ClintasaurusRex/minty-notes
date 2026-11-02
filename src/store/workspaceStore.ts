@@ -15,6 +15,7 @@ import {
   type WorkspaceInfo,
   type WorkspaceRecords,
 } from '../domain/types'
+import { isDateOnly } from '../domain/dates'
 import { docToPlainText } from '../domain/richtext'
 import { isLinkedTo, keepExisting, ownerProjectId } from '../domain/references'
 import { normalize, type PageText } from '../domain/search'
@@ -932,7 +933,7 @@ export class WorkspaceStore {
 
   createProject(fields: ProjectFields & { name: string }): Project {
     this.assertWritable()
-    const project = newProject(fields, this.nextOrder(Object.values(this.state.data.projects)))
+    const project = newProject(withValidDueDate(fields), this.nextOrder(Object.values(this.state.data.projects)))
     this.putRecord('projects', project)
     return project
   }
@@ -942,7 +943,7 @@ export class WorkspaceStore {
     this.assertWritable()
     const p = this.state.data.projects[id]
     if (!p) return
-    const next = { ...p, ...patch }
+    const next = { ...p, ...withValidDueDate(patch) }
     if (JSON.stringify(next) === JSON.stringify(p)) return
     this.putRecord('projects', { ...next, updatedAt: nowIso() })
   }
@@ -1204,6 +1205,18 @@ export function sameLocation(a: PageLocation, b: PageLocation): boolean {
   if (a.kind === 'section' && b.kind === 'section') return a.sectionId === b.sectionId
   if (a.kind === 'project' && b.kind === 'project') return a.projectId === b.projectId
   return true
+}
+
+/**
+ * A due date must be a real `YYYY-MM-DD` date (or null): anything else would
+ * make every later backup fail validation. Invalid values are ignored, so the
+ * previous date stays.
+ */
+function withValidDueDate<T extends ProjectFields>(fields: T): T {
+  if (fields.dueDate === undefined || fields.dueDate === null || isDateOnly(fields.dueDate)) return fields
+  const rest = { ...fields }
+  delete rest.dueDate
+  return rest
 }
 
 const INDEX_KINDS = ['projects', 'categories', 'tags', 'notebooks', 'sections', 'pages'] as const

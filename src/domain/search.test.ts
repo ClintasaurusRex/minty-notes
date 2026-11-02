@@ -92,6 +92,11 @@ describe('date-only due dates', () => {
     expect(isDateOnly('2026-02-28')).toBe(true)
     expect(isDateOnly('2026-02-30')).toBe(false)
     expect(isDateOnly('2026-2-3')).toBe(false)
+    // Chrome's date field gives these for a two-digit year (valid) and gave this for a five-digit one (invalid).
+    expect(isDateOnly('0099-12-15')).toBe(true)
+    expect(isDateOnly('0001-01-01')).toBe(true)
+    expect(isDateOnly('20261-12-15')).toBe(false)
+    expect(dueState('0099-12-15', '2026-11-02').tone).toBe('overdue')
     expect(formatDateOnly('2026-12-15')).toMatch(/15/)
     expect(dueState('2026-11-01', '2026-11-02').tone).toBe('overdue')
     expect(dueState('2026-11-02', '2026-11-02').tone).toBe('today')

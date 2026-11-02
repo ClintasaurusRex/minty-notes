@@ -154,7 +154,7 @@ describe('archive, trash, and deletion', () => {
   })
 
   it('trashed and deleted reference sources leave no dangling links', async () => {
-    const { store, ref, other, north, south } = await library()
+    const { store, ref, other, north, south, attachmentId } = await library()
     store.pinReference(north.id, other.id)
     store.hideReference(south.id, ref.id)
     const copy = await store.makeProjectCopy(north.id, ref.id)
@@ -177,9 +177,20 @@ describe('archive, trash, and deletion', () => {
     expect(data.pages[copy.id].copiedFrom).toMatchObject({ pageId: null, title: 'Alarm setup' })
     refs = projectReferences(data.projects[north.id], lib(store))
     expect(refs.trashedPinned).toEqual([])
-    // The workspace still passes full backup validation.
+    // The workspace still passes full backup validation, and the copy keeps its
+    // text and screenshot after the original was deleted forever.
     const { bytes } = await new BackupService(store, { appVersion: 'test', folderSupported: false }).createArchive()
-    expect((await readArchive(bytes)).ok).toBe(true)
+    const validated = await readArchive(bytes)
+    if (!validated.ok) throw new Error(validated.errors.join('\n'))
+    const clean = await freshStore()
+    await clean.store.becomeEditor()
+    await new BackupService(clean.store, { appVersion: 'test', folderSupported: false }).restore(validated)
+    expect(clean.store.getState().data.pages[ref.id]).toBeUndefined()
+    expect(await bodyOf(clean.store, copy.id)).toBe('Use the alarm priority list')
+    const copiedImage = Object.values(await clean.store.ensurePageObjects(copy.id)).find((o) => o.type === 'image') as ImageObject
+    expect(copiedImage.attachmentId).toBe(attachmentId)
+    const blob = await clean.store.getBlob(attachmentId)
+    expect(await sha256Hex(new Uint8Array(await blob!.arrayBuffer()))).toBe(await sha256Hex(PNG_1x1))
   })
 
   it('restoring a note whose project is in the Trash puts it in the Inbox', async () => {
@@ -261,12 +272,29 @@ describe('backup and restore of Stage 2 records', () => {
       ['pin to a missing page', (r) => ({ ...r, projects: r.projects.map((p) => (p.id === north.id ? { ...p, pinnedPageIds: ['gone'] } : p)) }), /links to a missing page/],
       ['missing category', (r) => ({ ...r, notebooks: r.notebooks.map((n) => ({ ...n, categoryIds: ['gone'] })) }), /missing category/],
       ['missing tag', (r) => ({ ...r, pages: r.pages.map((p) => ({ ...p, tagIds: ['gone'] })) }), /missing tag/],
-      ['bad due date', (r) => ({ ...r, projects: r.projects.map((p) => ({ ...p, dueDate: '2026-02-30' })) }), /Project #1 is invalid/],
+      ['bad status', (r) => ({ ...r, projects: r.projects.map((p) => ({ ...p, status: 'unknown' as never })) }), /Project #1 is invalid/],
     ]
     for (const [, mutate, error] of variants) {
       const result = await readArchive(await buildArchive(mutate(records), blobs, 'test'))
       expect(result).toMatchObject({ ok: false, errors: expect.arrayContaining([expect.stringMatching(error)]) })
     }
+  })
+
+  it('an invalid due date (as app 0.2.0 could store from Chrome’s date field) no longer blocks restoring a backup', async () => {
+    const { store, repo, north } = await library()
+    // The store now ignores such values…
+    store.updateProject(north.id, { dueDate: '2026-12-15' })
+    store.updateProject(north.id, { dueDate: '20261-12-15' })
+    expect(store.getState().data.projects[north.id].dueDate).toBe('2026-12-15')
+    // …and a backup that already contains one restores with a warning, without that date.
+    await store.flush()
+    const { records, blobs } = await repo.readAll()
+    const bad = { ...records, projects: records.projects.map((p) => (p.id === north.id ? { ...p, dueDate: '20261-12-15' } : p)) }
+    const validated = await readArchive(await buildArchive(bad, blobs, '0.2.0'))
+    if (!validated.ok) throw new Error(validated.errors.join('\n'))
+    expect(validated.warnings.join(' ')).toMatch(/North pump station.*invalid due date \(20261-12-15\)/)
+    expect(validated.records.projects.find((p) => p.id === north.id)?.dueDate).toBeNull()
+    expect(validated.records.pages).toHaveLength(records.pages.length)
   })
 
   it('accepts a Stage 1 (format 1) backup and upgrades its records', async () => {

@@ -21,7 +21,7 @@ Tag      { id, name, createdAt, updatedAt }               // free label on pages
 Project {
   id, name, customer, site, jobNumber, description,
   status: 'planned' | 'active' | 'on-hold' | 'complete',
-  dueDate: 'YYYY-MM-DD' | null,
+  dueDate: 'YYYY-MM-DD' | null,                          // four-digit year; the store ignores anything else
   contacts:      { id, name, role, phone, email }[],
   equipment:     { id, name, detail }[],
   software:      { id, name, detail }[],                   // detail = version
@@ -122,6 +122,8 @@ README.txt
 Before validation, version-1 archives (apps 0.1.0–0.1.2) are upgraded in `readArchive`:
 1. One known repair: a **trashed** page whose section is missing (written by app 0.1.0 after deleting that section or notebook) gets location `{ kind: 'inbox' }`, with a warning in the restore review. A live page pointing at a missing section is still rejected.
 2. `migrateRecordsV1toV2`: add empty `projects`, `categories`, `tags`; add `categoryIds: []` to notebooks and sections; add `categoryIds: []`, `tagIds: []`, `copiedFrom: null` to pages; set `workspace.formatVersion` to 2. Nothing else changes.
+
+Every archive (any version) also gets one repair: a project `dueDate` that is a string but not a valid `YYYY-MM-DD` date (app 0.2.0 could store e.g. `20261-12-15` from Chrome's date field) is set to `null`, with a warning naming the project and the value, instead of refusing the whole backup.
 
 Restore rejects the archive (and changes nothing) if any of these fail: ZIP readable; total ≤ 4 GiB and ≤ 200,000 entries; format name; `1 ≤ formatVersion ≤ FORMAT_VERSION`; `records.json` checksum; record shapes and timestamps; unique IDs; project fields (known status, valid `YYYY-MM-DD` due date or null, list item shapes, `path`/`url` kinds); section → notebook, page → section, page → project, object → page, image → attachment, project/notebook/section/page → category, page → tag, pinned/hidden → page, and `copiedFrom.pageId` → page (when not null) links; rich text valid for the schema; every attachment present with matching size and SHA-256. Unsafe paths (`..`, absolute, `\`) and unknown files are ignored with a warning.
 

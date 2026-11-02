@@ -196,7 +196,83 @@ const FIELD_LABELS: Record<string, string> = {
   hiddenPageIds: 'Hidden references',
 }
 
-export function reconcileHeldChanges(held: HeldChange[], latest: LatestRecords, now: string): ReconcileResult {
+const inProject = (p: Page, projectId: string) => p.location.kind === 'project' && p.location.projectId === projectId
+
+/** Put back IDs this window removed only because of a deletion that is being refused. */
+function restoreIds<T extends AnyRecord>(mine: T, base: T, field: string, refused: Set<string>): T {
+  const b = (base as unknown as Record<string, unknown>)[field]
+  const m = (mine as unknown as Record<string, unknown>)[field]
+  if (!Array.isArray(b) || !Array.isArray(m)) return mine
+  const back = (b as string[]).filter((id) => refused.has(id) && !(m as string[]).includes(id))
+  return back.length ? ({ ...mine, [field]: [...(m as string[]), ...back] } as T) : mine
+}
+
+/**
+ * A deletion held in this window is refused (step 2) when the other window
+ * changed the record or still uses it. The changes this window made only as
+ * part of that deletion must then be dropped too — otherwise a kept project
+ * would lose its notes to the Trash, a kept category or tag would be removed
+ * from everything, or a kept page would lose its content, pins, hides, and the
+ * source link of its project copies. This predicts the refusals with the same
+ * rules as step 2 and removes those side effects before anything is merged.
+ */
+export function withoutRefusedCascades(held: HeldChange[], latest: LatestRecords): HeldChange[] {
+  const theirsOf = (h: HeldChange) => (latest[h.kind] as Record<string, AnyRecord>)[h.id] as AnyRecord | undefined
+  const deletions = (kind: RecordKind) => held.filter((h) => h.kind === kind && !h.mine && h.base && theirsOf(h))
+  const refused = { pages: new Set<string>(), projects: new Set<string>(), categories: new Set<string>(), tags: new Set<string>() }
+
+  for (const kind of ['categories', 'tags'] as const) {
+    for (const h of deletions(kind)) if (isIntendedChange(h.base, theirsOf(h)!)) refused[kind].add(h.id)
+  }
+  // Objects this window deletes that the other window did not change (those deletions go ahead).
+  const objectsGone = new Set(deletions('objects').filter((h) => !isIntendedChange(h.base, theirsOf(h)!)).map((h) => h.id))
+  for (const h of held) if (h.kind === 'objects' && !h.mine && !theirsOf(h)) objectsGone.add(h.id)
+  for (const h of deletions('pages')) {
+    const stillHasContent = Object.values(latest.objects).some((o) => o.pageId === h.id && !objectsGone.has(o.id))
+    if (isIntendedChange(h.base, theirsOf(h)!) || stillHasContent) refused.pages.add(h.id)
+  }
+  for (const h of deletions('projects')) {
+    // Notes this window moved out as part of deleting the project (to the Inbox, in the Trash).
+    const movedOut = new Set(
+      held
+        .filter((x) => x.kind === 'pages' && x.base && x.mine && inProject(x.base as Page, h.id) && (x.mine as Page).location.kind === 'inbox' && (x.mine as Page).trashedAt)
+        .map((x) => x.id),
+    )
+    const stillUsed = Object.values(latest.pages).some((p) => inProject(p, h.id) && !movedOut.has(p.id))
+    if (isIntendedChange(h.base, theirsOf(h)!) || stillUsed) refused.projects.add(h.id)
+  }
+  if (Object.values(refused).every((s) => s.size === 0)) return held
+
+  const out: HeldChange[] = []
+  for (const h of held) {
+    // The content of a page whose deletion is refused stays.
+    if (h.kind === 'objects' && !h.mine && h.base && refused.pages.has((h.base as CanvasObject).pageId)) continue
+    if (!h.mine || !h.base) {
+      out.push(h)
+      continue
+    }
+    let mine = h.mine
+    if (h.kind === 'pages') {
+      const base = h.base as Page
+      const m = mine as Page
+      if (m.location.kind === 'inbox' && m.trashedAt && [...refused.projects].some((id) => inProject(base, id))) {
+        mine = { ...m, location: base.location, trashedAt: base.trashedAt }
+      }
+      if (base.copiedFrom?.pageId && refused.pages.has(base.copiedFrom.pageId) && (mine as Page).copiedFrom?.pageId === null) {
+        mine = { ...(mine as Page), copiedFrom: base.copiedFrom }
+      }
+    }
+    mine = restoreIds(mine, h.base, 'categoryIds', refused.categories)
+    mine = restoreIds(mine, h.base, 'tagIds', refused.tags)
+    mine = restoreIds(mine, h.base, 'pinnedPageIds', refused.pages)
+    mine = restoreIds(mine, h.base, 'hiddenPageIds', refused.pages)
+    out.push(mine === h.mine ? h : { ...h, mine })
+  }
+  return out
+}
+
+export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRecords, now: string): ReconcileResult {
+  const held = withoutRefusedCascades(heldChanges, latest)
   const changes = emptyChangeSet()
   const recovered: RecoveredItem[] = []
   let applied = 0
