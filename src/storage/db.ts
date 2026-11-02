@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase, type IDBPTransaction, type StoreNames } from 'idb'
-import { FORMAT_VERSION, type AttachmentMeta, type CanvasObject, type Category, type Notebook, type Page, type Project, type Section, type Tag } from '../domain/types'
+import { FORMAT_VERSION, type AttachmentMeta, type CanvasObject, type Category, type Notebook, type Page, type Project, type Section, type Tag, type Task, type Template } from '../domain/types'
 
 export const DB_NAME = 'minty-notes'
 /**
@@ -9,11 +9,15 @@ export const DB_NAME = 'minty-notes'
  *    section are moved to the Inbox (see migrateToV2).
  * 3: `projects`, `categories`, `tags` stores; pages gain categoryIds/tagIds/copiedFrom,
  *    notebooks and sections gain categoryIds (see migrateToV3).
+ * 4: `tasks` (byProject index) and `templates` stores; project file locations
+ *    gain `description` (see migrateToV4).
  */
-export const DB_VERSION = 3
+export const DB_VERSION = 4
 
 export interface MintyDB extends DBSchema {
   projects: { key: string; value: Project }
+  tasks: { key: string; value: Task; indexes: { byProject: string } }
+  templates: { key: string; value: Template }
   categories: { key: string; value: Category }
   tags: { key: string; value: Tag }
   notebooks: { key: string; value: Notebook }
@@ -27,9 +31,9 @@ export interface MintyDB extends DBSchema {
   settings: { key: string; value: unknown }
 }
 
-export type RecordStoreName = 'projects' | 'categories' | 'tags' | 'notebooks' | 'sections' | 'pages' | 'objects'
-export const RECORD_STORES: RecordStoreName[] = ['projects', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'objects']
-export const ALL_STORES = ['projects', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'objects', 'attachments', 'blobs', 'settings'] as const
+export type RecordStoreName = 'projects' | 'tasks' | 'templates' | 'categories' | 'tags' | 'notebooks' | 'sections' | 'pages' | 'objects'
+export const RECORD_STORES: RecordStoreName[] = ['projects', 'tasks', 'templates', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'objects']
+export const ALL_STORES = ['projects', 'tasks', 'templates', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'objects', 'attachments', 'blobs', 'settings'] as const
 
 export type MintyDatabase = IDBPDatabase<MintyDB>
 
@@ -56,6 +60,13 @@ export function createV3Stores(db: IDBPDatabase<MintyDB>): void {
   db.createObjectStore('projects', { keyPath: 'id' })
   db.createObjectStore('categories', { keyPath: 'id' })
   db.createObjectStore('tags', { keyPath: 'id' })
+}
+
+/** Version-4 object stores (tasks and templates). */
+export function createV4Stores(db: IDBPDatabase<MintyDB>): void {
+  const tasks = db.createObjectStore('tasks', { keyPath: 'id' })
+  tasks.createIndex('byProject', 'projectId')
+  db.createObjectStore('templates', { keyPath: 'id' })
 }
 
 type UpgradeTx = IDBPTransaction<MintyDB, StoreNames<MintyDB>[], 'versionchange'>
@@ -103,17 +114,37 @@ export async function migrateToV3(tx: UpgradeTx): Promise<void> {
   if (workspace && (workspace.formatVersion ?? 1) < FORMAT_VERSION) await settings.put({ ...workspace, formatVersion: FORMAT_VERSION }, 'workspace')
 }
 
+/**
+ * Version 3 → 4, inside the upgrade transaction: every saved project file
+ * location gets an empty `description`, and the workspace is marked as data
+ * format 3. The new stores start empty; nothing else changes.
+ */
+export async function migrateToV4(tx: UpgradeTx): Promise<void> {
+  const projects = tx.objectStore('projects')
+  for (const project of await projects.getAll()) {
+    const locations = Array.isArray(project.fileLocations) ? project.fileLocations : []
+    if (locations.some((f) => typeof (f as Partial<typeof f>).description !== 'string') || !Array.isArray(project.fileLocations)) {
+      await projects.put({ ...project, fileLocations: locations.map((f) => ({ ...f, description: typeof f.description === 'string' ? f.description : '' })) })
+    }
+  }
+  const settings = tx.objectStore('settings')
+  const workspace = (await settings.get('workspace')) as { formatVersion?: number } | undefined
+  if (workspace && (workspace.formatVersion ?? 1) < FORMAT_VERSION) await settings.put({ ...workspace, formatVersion: FORMAT_VERSION }, 'workspace')
+}
+
 export function openMintyDB(name = DB_NAME, options: OpenOptions = {}): Promise<MintyDatabase> {
   return openDB<MintyDB>(name, DB_VERSION, {
     upgrade(db, oldVersion, _newVersion, transaction) {
       if (oldVersion < 1) createV1Stores(db)
       if (oldVersion < 3) createV3Stores(db)
+      if (oldVersion < 4) createV4Stores(db)
       if (oldVersion >= 1) {
         // Data migrations run in order inside the one upgrade transaction. Any
         // failure aborts the whole upgrade, so the older data stays untouched.
         void (async () => {
           if (oldVersion < 2) await migrateToV2(transaction)
           if (oldVersion < 3) await migrateToV3(transaction)
+          if (oldVersion < 4) await migrateToV4(transaction)
         })().catch(() => transaction.abort())
         // The open request reports the failure; don't also leave an unhandled rejection.
         transaction.done.catch(() => undefined)

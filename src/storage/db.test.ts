@@ -6,7 +6,7 @@ import { docFromPlainText, docToPlainText } from '../domain/richtext'
 import { FORMAT_VERSION, newId, nowIso, type TextObject } from '../domain/types'
 import { freshStore } from '../test/fixtures'
 import { WorkspaceStore } from '../store/workspaceStore'
-import { createV1Stores, DB_VERSION, type MintyDB } from './db'
+import { createV1Stores, createV3Stores, DB_VERSION, type MintyDB } from './db'
 import { emptyChangeSet, IdbRepository } from './repository'
 
 let n = 0
@@ -49,8 +49,8 @@ async function makeLegacyDatabase(version: 1 | 2, withActivity: boolean) {
 }
 
 describe('IndexedDB migrations', () => {
-  it('1 → 3: adds the revision, repairs the trashed orphan, and adds Stage 2 fields', async () => {
-    expect(DB_VERSION).toBe(3)
+  it('1 → 4: adds the revision, repairs the trashed orphan, and adds Stage 2 and 3 fields', async () => {
+    expect(DB_VERSION).toBe(4)
     const v1 = await makeLegacyDatabase(1, true)
     const repo = await IdbRepository.open(v1.name)
     const index = await repo.loadIndex()
@@ -71,7 +71,7 @@ describe('IndexedDB migrations', () => {
     repo.close()
   })
 
-  it('2 → 3: keeps every Stage 1 note, ID, attachment, and layout; the result backs up and restores', async () => {
+  it('2 → 4: keeps every Stage 1 note, ID, attachment, and layout; the result backs up and restores', async () => {
     const v2 = await makeLegacyDatabase(2, true)
     const repo = await IdbRepository.open(v2.name)
     const store = new WorkspaceStore(repo, { debounceMs: 5, maxWaitMs: 20 })
@@ -128,6 +128,88 @@ describe('IndexedDB migrations', () => {
     expect(after.objectStoreNames.contains('projects')).toBe(false)
     const pages = (await after.getAll('pages')) as Record<string, unknown>[]
     expect(pages.every((p) => !('categoryIds' in p))).toBe(true)
+    after.close()
+  })
+
+  it('3 → 4: keeps every Stage 2 record; adds task and template stores and file-location descriptions', async () => {
+    const name = `minty-v3-${Date.now()}-${n++}`
+    const db = await openDB<MintyDB>(name, 3, { upgrade: (d) => {
+      createV1Stores(d)
+      createV3Stores(d)
+    } })
+    const r = stage1Records()
+    const put = (store: string, value: unknown, key?: string) => (db.put as (s: string, v: unknown, k?: string) => Promise<unknown>)(store, value, key)
+    const category = { id: newId(), name: 'VTScada', order: 1, createdAt: r.at, updatedAt: r.at }
+    const project = {
+      id: newId(), name: 'Stage 2 plant', customer: 'C', site: 'S', jobNumber: 'J-1', description: '', status: 'active', dueDate: '2026-12-15',
+      contacts: [], equipment: [], software: [],
+      fileLocations: [{ id: newId(), label: 'Folder', kind: 'path', value: 'C:\\Jobs\\J-1' }, { id: newId(), label: 'Dropbox', kind: 'url', value: 'https://www.dropbox.com/home' }],
+      categoryIds: [category.id], pinnedPageIds: [r.live.id], hiddenPageIds: [], order: 1, archivedAt: null, trashedAt: null, createdAt: r.at, updatedAt: r.at,
+    }
+    await put('categories', category)
+    await put('projects', project)
+    await put('notebooks', { ...r.notebook, categoryIds: [category.id] })
+    await put('sections', { ...r.section, categoryIds: [] })
+    await put('pages', { ...r.live, categoryIds: [], tagIds: [], copiedFrom: null })
+    await put('pages', { ...r.inbox, location: { kind: 'project', projectId: project.id }, categoryIds: [], tagIds: [], copiedFrom: null })
+    await put('objects', r.text)
+    await put('settings', { workspaceId: 'ws-stage2', formatVersion: 2, createdAt: r.at }, 'workspace')
+    await put('settings', { lastChangeAt: r.at, revision: 42 }, 'activity')
+    db.close()
+
+    const repo = await IdbRepository.open(name)
+    const store = new WorkspaceStore(repo, { debounceMs: 5, maxWaitMs: 20 })
+    await store.load()
+    await store.becomeEditor()
+    const { data } = store.getState()
+    expect(data.revision).toBe(42)
+    expect(data.workspace).toMatchObject({ workspaceId: 'ws-stage2', formatVersion: 3 })
+    expect(data.tasks).toEqual({})
+    expect(data.templates).toEqual({})
+    const migrated = data.projects[project.id]
+    expect(migrated).toMatchObject({ name: 'Stage 2 plant', dueDate: '2026-12-15', categoryIds: [category.id], pinnedPageIds: [r.live.id], updatedAt: r.at })
+    expect(migrated.fileLocations).toEqual(project.fileLocations.map((f) => ({ ...f, description: '' })))
+    expect(data.pages[r.inbox.id].location).toEqual({ kind: 'project', projectId: project.id })
+    expect(docToPlainText(((await store.ensurePageObjects(r.live.id))[r.text.id] as TextObject).doc)).toBe('Stage 1 text')
+
+    // Stage 3 features work on the migrated workspace, and it backs up and restores.
+    const task = store.createTask(project.id, { title: 'First Stage 3 task', dueDate: '2026-11-20' })
+    store.linkTaskPage(task.id, r.inbox.id)
+    await store.flush()
+    const reopened = new WorkspaceStore(await IdbRepository.open(name), { debounceMs: 5, maxWaitMs: 20 })
+    await reopened.load()
+    expect(reopened.getState().data.tasks[task.id]).toMatchObject({ linkedPageIds: [r.inbox.id], dueDate: '2026-11-20' })
+    const { bytes } = await new BackupService(store, { appVersion: 'test', folderSupported: false }).createArchive()
+    const validated = await readArchive(bytes)
+    if (!validated.ok) throw new Error(validated.errors.join('; '))
+    expect(validated.records.tasks).toHaveLength(1)
+    repo.close()
+  })
+
+  it('a failed version-4 migration leaves the version-3 database untouched', async () => {
+    const name = `minty-v3-fail-${Date.now()}-${n++}`
+    const db = await openDB<MintyDB>(name, 3, { upgrade: (d) => {
+      createV1Stores(d)
+      createV3Stores(d)
+    } })
+    const at = nowIso()
+    const project = { id: newId(), name: 'Keep me', customer: '', site: '', jobNumber: '', description: '', status: 'active', dueDate: null, contacts: [], equipment: [], software: [], fileLocations: [{ id: 'f1', label: 'F', kind: 'path', value: 'C:\\x' }], categoryIds: [], pinnedPageIds: [], hiddenPageIds: [], order: 1, archivedAt: null, trashedAt: null, createdAt: at, updatedAt: at }
+    await (db.put as (s: string, v: unknown) => Promise<unknown>)('projects', project)
+    db.close()
+    const original = IDBObjectStore.prototype.put
+    IDBObjectStore.prototype.put = function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['put']>) {
+      if (this.name === 'projects') throw new DOMException('simulated failure', 'UnknownError')
+      return original.apply(this, args)
+    }
+    try {
+      await expect(IdbRepository.open(name)).rejects.toBeTruthy()
+    } finally {
+      IDBObjectStore.prototype.put = original
+    }
+    const after = await openDB(name)
+    expect(after.version).toBe(3)
+    expect(after.objectStoreNames.contains('tasks')).toBe(false)
+    expect(((await after.getAll('projects')) as { fileLocations: object[] }[])[0].fileLocations[0]).not.toHaveProperty('description')
     after.close()
   })
 })

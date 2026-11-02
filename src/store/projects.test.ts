@@ -232,8 +232,8 @@ describe('backup and restore of Stage 2 records', () => {
       equipment: [{ id: newId(), name: 'PLC', detail: '1756-L83E' }],
       software: [{ id: newId(), name: 'VTScada', detail: '12.1.40' }],
       fileLocations: [
-        { id: newId(), label: 'Project folder', kind: 'path', value: 'C:\\Dropbox\\Jobs\\J-1001' },
-        { id: newId(), label: 'Dropbox link', kind: 'url', value: 'https://www.dropbox.com/home/Jobs/J-1001' },
+        { id: newId(), label: 'Project folder', kind: 'path', value: 'C:\\Dropbox\\Jobs\\J-1001', description: '' },
+        { id: newId(), label: 'Dropbox link', kind: 'url', value: 'https://www.dropbox.com/home/Jobs/J-1001', description: 'Shared folder' },
       ],
     })
     store.pinReference(src.south.id, src.other.id)
@@ -304,7 +304,7 @@ describe('backup and restore of Stage 2 records', () => {
     const validated = await readArchive(await buildStage1Archive(stage1, blobs))
     if (!validated.ok) throw new Error(validated.errors.join('\n'))
     expect(validated.summary.formatVersion).toBe(1)
-    expect(validated.records.workspace.formatVersion).toBe(2)
+    expect(validated.records.workspace.formatVersion).toBe(3) // format 1 → 2 → 3
     expect(validated.records.pages.find((p) => p.id === ref.id)).toMatchObject({ categoryIds: [], tagIds: [], copiedFrom: null, title: 'Alarm setup' })
     expect(validated.records.projects).toEqual([])
   })

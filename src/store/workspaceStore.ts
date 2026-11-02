@@ -12,10 +12,15 @@ import {
   type RichTextDoc,
   type Section,
   type Tag,
+  type Task,
+  type TaskStatus,
+  type Template,
   type WorkspaceInfo,
   type WorkspaceRecords,
 } from '../domain/types'
 import { isDateOnly } from '../domain/dates'
+import { isTaskPriority, isTaskStatus, moveTarget, placeTask, type TaskMove } from '../domain/tasks'
+import { instantiateNote, instantiateProject, pruneTemplateRefs, templateFromPage, templateFromProject } from '../domain/templates'
 import { docToPlainText } from '../domain/richtext'
 import { isLinkedTo, keepExisting, ownerProjectId } from '../domain/references'
 import { normalize, type PageText } from '../domain/search'
@@ -34,6 +39,8 @@ export interface SaveState {
 export interface WorkspaceData {
   workspace: WorkspaceInfo | null
   projects: Record<string, Project>
+  tasks: Record<string, Task>
+  templates: Record<string, Template>
   categories: Record<string, Category>
   tags: Record<string, Tag>
   notebooks: Record<string, Notebook>
@@ -73,7 +80,7 @@ export interface StoreOptions {
 }
 
 function emptyData(): WorkspaceData {
-  return { workspace: null, projects: {}, categories: {}, tags: {}, notebooks: {}, sections: {}, pages: {}, objects: {}, attachments: {}, lastChangeAt: null, revision: 0 }
+  return { workspace: null, projects: {}, tasks: {}, templates: {}, categories: {}, tags: {}, notebooks: {}, sections: {}, pages: {}, objects: {}, attachments: {}, lastChangeAt: null, revision: 0 }
 }
 
 function byId<T extends { id: string }>(items: T[]): Record<string, T> {
@@ -198,6 +205,8 @@ export class WorkspaceStore {
         data: {
           workspace: index.workspace,
           projects: overlay(index.projects, (c) => c.projects),
+          tasks: overlay(index.tasks, (c) => c.tasks),
+          templates: overlay(index.templates, (c) => c.templates),
           categories: overlay(index.categories, (c) => c.categories),
           tags: overlay(index.tags, (c) => c.tags),
           notebooks: overlay(index.notebooks, (c) => c.notebooks),
@@ -277,6 +286,8 @@ export class WorkspaceStore {
       held,
       {
         projects: byId(index.projects),
+        tasks: byId(index.tasks),
+        templates: byId(index.templates),
         categories: byId(index.categories),
         tags: byId(index.tags),
         notebooks: byId(index.notebooks),
@@ -685,6 +696,11 @@ export class WorkspaceStore {
     for (const copy of Object.values(this.state.data.pages)) {
       if (copy.copiedFrom?.pageId === id) this.putPage({ ...copy, copiedFrom: { ...copy.copiedFrom, pageId: null } })
     }
+    // Tasks and templates drop their link to it (no dangling relationships).
+    for (const task of Object.values(this.state.data.tasks)) {
+      if (task.linkedPageIds.includes(id)) this.putRecord('tasks', { ...task, linkedPageIds: task.linkedPageIds.filter((x) => x !== id), updatedAt: at })
+    }
+    this.pruneTemplates({ page: (x) => x !== id })
   }
 
   /** Load a page's canvas objects (once) and return them. */
@@ -988,6 +1004,8 @@ export class WorkspaceStore {
       this.putPage({ ...page, location: { kind: 'inbox' }, trashedAt: page.trashedAt ?? at, updatedAt: at })
       moved++
     }
+    // Its tasks belong to it and go with it (the confirmation names how many).
+    for (const task of this.projectTasks(id)) this.dropRecord('tasks', task.id)
     this.dropRecord('projects', id)
     return moved
   }
@@ -1101,6 +1119,7 @@ export class WorkspaceStore {
     this.assertWritable()
     if (!this.state.data.categories[id]) return
     this.stripLabel('categoryIds', id)
+    this.pruneTemplates({ category: (x) => x !== id })
     this.dropRecord('categories', id)
   }
 
@@ -1127,6 +1146,7 @@ export class WorkspaceStore {
     this.assertWritable()
     if (!this.state.data.tags[id]) return
     this.stripLabel('tagIds', id)
+    this.pruneTemplates({ tag: (x) => x !== id })
     this.dropRecord('tags', id)
   }
 
@@ -1186,6 +1206,216 @@ export class WorkspaceStore {
     return texts
   }
 
+  // ----------------------------------------------------------------- tasks
+
+  /** Every task of a project (any status). */
+  projectTasks(projectId: string): Task[] {
+    return Object.values(this.state.data.tasks).filter((t) => t.projectId === projectId)
+  }
+
+  /** Add a task to a project's board (at the end of its column). */
+  createTask(projectId: string, fields: TaskFields & { title: string }): Task {
+    this.assertWritable()
+    if (!this.state.data.projects[projectId]) throw new Error('The project no longer exists.')
+    const at = nowIso()
+    const clean = cleanTaskFields(fields, this.state.data.pages)
+    const status: TaskStatus = clean.status ?? 'todo'
+    const column = this.projectTasks(projectId).filter((t) => t.status === status)
+    const task: Task = {
+      id: newId(),
+      projectId,
+      title: '',
+      description: '',
+      status,
+      priority: 'normal',
+      dueDate: null,
+      linkedPageIds: [],
+      ...clean,
+      order: this.nextOrder(column),
+      completedAt: status === 'done' ? at : null,
+      createdAt: at,
+      updatedAt: at,
+    }
+    task.title = task.title.trim() || 'Untitled task'
+    this.putRecord('tasks', task)
+    return task
+  }
+
+  /**
+   * Change a task's details. Invalid values (an unknown status or priority, a
+   * due date that is not a real `YYYY-MM-DD` date, links to missing pages) are
+   * ignored, so they can never reach storage or a backup.
+   */
+  updateTask(id: string, patch: TaskFields): void {
+    this.assertWritable()
+    const t = this.state.data.tasks[id]
+    if (!t) return
+    const clean = cleanTaskFields(patch, this.state.data.pages)
+    if (clean.status && clean.status !== t.status) {
+      // A status change is a move: append to the end of the new column.
+      this.moveTask(id, clean.status, null)
+      delete clean.status
+    }
+    const current = this.state.data.tasks[id]
+    const next = { ...current, ...clean }
+    if (JSON.stringify(next) === JSON.stringify(current)) return
+    this.putRecord('tasks', { ...next, updatedAt: nowIso() })
+  }
+
+  /** Move a task to a column, before another task (or to the end). Completion follows the Done column. */
+  moveTask(id: string, status: TaskStatus, beforeId: string | null): void {
+    this.assertWritable()
+    const task = this.state.data.tasks[id]
+    if (!task || !isTaskStatus(status)) return
+    const at = nowIso()
+    for (const change of placeTask(Object.values(this.state.data.tasks), id, status, beforeId)) {
+      const t = this.state.data.tasks[change.id]
+      const statusChanged = t.status !== change.status
+      this.putRecord('tasks', {
+        ...t,
+        status: change.status,
+        order: change.order,
+        completedAt: statusChanged ? (change.status === 'done' ? at : null) : t.completedAt,
+        updatedAt: statusChanged || t.id === id ? at : t.updatedAt,
+      })
+    }
+  }
+
+  /** Keyboard move (left/right between columns, up/down within one). Returns false at an edge. */
+  nudgeTask(id: string, move: TaskMove): boolean {
+    this.assertWritable()
+    const task = this.state.data.tasks[id]
+    if (!task) return false
+    const target = moveTarget(Object.values(this.state.data.tasks), task, move)
+    if (!target) return false
+    this.moveTask(id, target.status, target.beforeId)
+    return true
+  }
+
+  /** Complete (to the end of Done) or reopen (to the end of To do). */
+  setTaskDone(id: string, done: boolean): void {
+    this.assertWritable()
+    const t = this.state.data.tasks[id]
+    if (!t || (t.status === 'done') === done) return
+    this.moveTask(id, done ? 'done' : 'todo', null)
+  }
+
+  deleteTask(id: string): void {
+    this.assertWritable()
+    if (!this.state.data.tasks[id]) return
+    this.dropRecord('tasks', id)
+  }
+
+  /** Link a task to an existing note (by ID; the note is not copied). */
+  linkTaskPage(taskId: string, pageId: string): void {
+    this.assertWritable()
+    const t = this.state.data.tasks[taskId]
+    if (!t || !this.state.data.pages[pageId] || t.linkedPageIds.includes(pageId)) return
+    this.putRecord('tasks', { ...t, linkedPageIds: [...t.linkedPageIds, pageId], updatedAt: nowIso() })
+  }
+
+  unlinkTaskPage(taskId: string, pageId: string): void {
+    this.assertWritable()
+    const t = this.state.data.tasks[taskId]
+    if (!t || !t.linkedPageIds.includes(pageId)) return
+    this.putRecord('tasks', { ...t, linkedPageIds: t.linkedPageIds.filter((x) => x !== pageId), updatedAt: nowIso() })
+  }
+
+  // ------------------------------------------------------------- templates
+
+  /** Save a page as a reusable note template (a snapshot; the page stays independent). */
+  async createTemplateFromPage(pageId: string, name: string): Promise<Template> {
+    this.assertWritable()
+    const page = this.state.data.pages[pageId]
+    if (!page) throw new Error('The page no longer exists.')
+    const objects = Object.values(await this.ensurePageObjects(pageId))
+    this.assertWritable()
+    this.commitTextSession()
+    const template = templateFromPage(this.state.data.pages[pageId] ?? page, objects, name, nowIso())
+    this.putRecord('templates', template)
+    return template
+  }
+
+  /** Save a project's reusable settings, live notes, and tasks as a project template. */
+  async createTemplateFromProject(projectId: string, name: string): Promise<Template> {
+    this.assertWritable()
+    const project = this.state.data.projects[projectId]
+    if (!project) throw new Error('The project no longer exists.')
+    const owned = Object.values(this.state.data.pages)
+      .filter((p) => !p.trashedAt && ownerProjectId(p) === projectId)
+      .sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt))
+    const notes: { page: Page; objects: CanvasObject[] }[] = []
+    for (const page of owned) notes.push({ page, objects: Object.values(await this.ensurePageObjects(page.id)) })
+    this.assertWritable()
+    this.commitTextSession()
+    const template = templateFromProject(this.state.data.projects[projectId] ?? project, notes, this.projectTasks(projectId), this.state.data.pages, name, nowIso())
+    this.putRecord('templates', template)
+    return template
+  }
+
+  updateTemplate(id: string, patch: { name?: string; description?: string }): void {
+    this.assertWritable()
+    const t = this.state.data.templates[id]
+    if (!t) return
+    const next = { ...t, ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.description !== undefined ? { description: patch.description } : {}) }
+    if (next.name === t.name && next.description === t.description) return
+    this.putRecord('templates', { ...next, updatedAt: nowIso() })
+  }
+
+  /** Delete a template definition. Notes and projects made from it are independent and stay. */
+  deleteTemplate(id: string): void {
+    this.assertWritable()
+    if (!this.state.data.templates[id]) return
+    this.dropRecord('templates', id)
+  }
+
+  /** A new, independent note from a note template (or from one note of a project template). */
+  createPageFromTemplate(templateId: string, location: PageLocation, noteIndex = 0): Page {
+    this.assertWritable()
+    const template = this.state.data.templates[templateId]
+    const note = template?.notes[noteIndex]
+    if (!note) throw new Error('The template no longer exists.')
+    this.commitTextSession()
+    const siblings = Object.values(this.state.data.pages).filter((p) => sameLocation(p.location, location))
+    const { page, objects } = instantiateNote(note, location, this.nextOrder(siblings), nowIso(), this.state.data)
+    const map = Object.fromEntries(objects.map((o) => [o.id, o]))
+    this.setData({ pages: { ...this.state.data.pages, [page.id]: page }, objects: { ...this.state.data.objects, [page.id]: map } })
+    this.markDirty('pages', page.id, page)
+    for (const o of objects) this.markDirty('objects', o.id, o)
+    return page
+  }
+
+  /** A new, independent project (with its own notes and tasks) from a project template. */
+  createProjectFromTemplate(templateId: string, name: string): Project {
+    this.assertWritable()
+    const template = this.state.data.templates[templateId]
+    if (!template || template.kind !== 'project') throw new Error('The project template no longer exists.')
+    this.commitTextSession()
+    const made = instantiateProject(template, name, this.nextOrder(Object.values(this.state.data.projects)), nowIso(), this.state.data, (fields, order, at) => newProject(fields, order, at))
+    this.putRecord('projects', made.project)
+    const objectsByPage: Record<string, Record<string, CanvasObject>> = {}
+    for (const page of made.pages) objectsByPage[page.id] = {}
+    for (const o of made.objects) objectsByPage[o.pageId][o.id] = o
+    this.setData({
+      pages: { ...this.state.data.pages, ...Object.fromEntries(made.pages.map((p) => [p.id, p])) },
+      objects: { ...this.state.data.objects, ...objectsByPage },
+    })
+    for (const page of made.pages) this.markDirty('pages', page.id, page)
+    for (const o of made.objects) this.markDirty('objects', o.id, o)
+    for (const task of made.tasks) this.putRecord('tasks', task)
+    return made.project
+  }
+
+  /** Remove template references to deleted categories, tags, or pages. */
+  private pruneTemplates(keep: Partial<{ category: (id: string) => boolean; tag: (id: string) => boolean; page: (id: string) => boolean }>): void {
+    const at = nowIso()
+    const all = () => true
+    for (const t of Object.values(this.state.data.templates)) {
+      const next = pruneTemplateRefs(t, { category: keep.category ?? all, tag: keep.tag ?? all, page: keep.page ?? all })
+      if (next !== t) this.putRecord('templates', { ...next, updatedAt: at })
+    }
+  }
+
   // ----------------------------------------------------------- attachments
 
   /** Store attachment bytes first; only then may an object reference it. */
@@ -1212,16 +1442,29 @@ export function sameLocation(a: PageLocation, b: PageLocation): boolean {
  * make every later backup fail validation. Invalid values are ignored, so the
  * previous date stays.
  */
-function withValidDueDate<T extends ProjectFields>(fields: T): T {
+function withValidDueDate<T extends { dueDate?: string | null }>(fields: T): T {
   if (fields.dueDate === undefined || fields.dueDate === null || isDateOnly(fields.dueDate)) return fields
   const rest = { ...fields }
   delete rest.dueDate
   return rest
 }
 
-const INDEX_KINDS = ['projects', 'categories', 'tags', 'notebooks', 'sections', 'pages'] as const
+const INDEX_KINDS = ['projects', 'tasks', 'templates', 'categories', 'tags', 'notebooks', 'sections', 'pages'] as const
 type IndexKind = (typeof INDEX_KINDS)[number]
 type LabelTarget = 'notebooks' | 'sections' | 'pages' | 'projects'
+
+export type TaskFields = Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'dueDate' | 'linkedPageIds'>>
+
+/** Keep only valid task values (see updateTask). */
+function cleanTaskFields(fields: TaskFields, pages: Record<string, Page>): TaskFields {
+  const out: TaskFields = { ...withValidDueDate(fields) }
+  if (out.title !== undefined && typeof out.title !== 'string') delete out.title
+  if (out.description !== undefined && typeof out.description !== 'string') delete out.description
+  if (out.status !== undefined && !isTaskStatus(out.status)) delete out.status
+  if (out.priority !== undefined && !isTaskPriority(out.priority)) delete out.priority
+  if (out.linkedPageIds !== undefined) out.linkedPageIds = [...new Set(out.linkedPageIds)].filter((id) => !!pages[id])
+  return out
+}
 
 export type ProjectFields = Partial<Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'order' | 'archivedAt' | 'trashedAt'>>
 

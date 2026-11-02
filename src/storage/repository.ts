@@ -10,6 +10,8 @@ import {
   type Project,
   type Section,
   type Tag,
+  type Task,
+  type Template,
   type WorkspaceInfo,
   type WorkspaceRecords,
 } from '../domain/types'
@@ -18,6 +20,8 @@ import { ALL_STORES, openMintyDB, RECORD_STORES, type MintyDatabase, type OpenOp
 /** Pending record writes. A `null` value deletes the record. */
 export type ChangeSet = {
   projects: Map<string, Project | null>
+  tasks: Map<string, Task | null>
+  templates: Map<string, Template | null>
   categories: Map<string, Category | null>
   tags: Map<string, Tag | null>
   notebooks: Map<string, Notebook | null>
@@ -27,7 +31,7 @@ export type ChangeSet = {
 }
 
 export function emptyChangeSet(): ChangeSet {
-  return { projects: new Map(), categories: new Map(), tags: new Map(), notebooks: new Map(), sections: new Map(), pages: new Map(), objects: new Map() }
+  return { projects: new Map(), tasks: new Map(), templates: new Map(), categories: new Map(), tags: new Map(), notebooks: new Map(), sections: new Map(), pages: new Map(), objects: new Map() }
 }
 
 export function changeSetSize(c: ChangeSet): number {
@@ -71,6 +75,8 @@ export class OwnershipError extends Error {
 export interface WorkspaceIndex {
   workspace: WorkspaceInfo
   projects: Project[]
+  tasks: Task[]
+  templates: Template[]
   categories: Category[]
   tags: Tag[]
   notebooks: Notebook[]
@@ -119,14 +125,16 @@ export class IdbRepository implements Repository {
   }
 
   async loadIndex(): Promise<WorkspaceIndex> {
-    const tx = this.db.transaction(['projects', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'attachments', 'settings'], 'readwrite')
+    const tx = this.db.transaction(['projects', 'tasks', 'templates', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'attachments', 'settings'], 'readwrite')
     let workspace = (await tx.objectStore('settings').get(SETTINGS.workspace)) as WorkspaceInfo | undefined
     if (!workspace) {
       workspace = { workspaceId: newId(), formatVersion: FORMAT_VERSION, createdAt: nowIso() }
       await tx.objectStore('settings').put(workspace, SETTINGS.workspace)
     }
-    const [projects, categories, tags, notebooks, sections, pages, attachments, activity] = await Promise.all([
+    const [projects, tasks, templates, categories, tags, notebooks, sections, pages, attachments, activity] = await Promise.all([
       tx.objectStore('projects').getAll(),
+      tx.objectStore('tasks').getAll(),
+      tx.objectStore('templates').getAll(),
       tx.objectStore('categories').getAll(),
       tx.objectStore('tags').getAll(),
       tx.objectStore('notebooks').getAll(),
@@ -136,7 +144,7 @@ export class IdbRepository implements Repository {
       tx.objectStore('settings').get(SETTINGS.activity) as Promise<Activity | undefined>,
     ])
     await tx.done
-    return { workspace, projects, categories, tags, notebooks, sections, pages, attachments, activity: normalizeActivity(activity) }
+    return { workspace, projects, tasks, templates, categories, tags, notebooks, sections, pages, attachments, activity: normalizeActivity(activity) }
   }
 
   loadPageObjects(pageId: string): Promise<CanvasObject[]> {
@@ -202,9 +210,11 @@ export class IdbRepository implements Repository {
 
   async readAll(): Promise<{ records: WorkspaceRecords; blobs: Map<string, Blob>; revision: number }> {
     const tx = this.db.transaction(ALL_STORES, 'readonly')
-    const [workspace, projects, categories, tags, notebooks, sections, pages, objects, attachments, activity] = await Promise.all([
+    const [workspace, projects, tasks, templates, categories, tags, notebooks, sections, pages, objects, attachments, activity] = await Promise.all([
       tx.objectStore('settings').get(SETTINGS.workspace) as Promise<WorkspaceInfo | undefined>,
       tx.objectStore('projects').getAll(),
+      tx.objectStore('tasks').getAll(),
+      tx.objectStore('templates').getAll(),
       tx.objectStore('categories').getAll(),
       tx.objectStore('tags').getAll(),
       tx.objectStore('notebooks').getAll(),
@@ -224,7 +234,7 @@ export class IdbRepository implements Repository {
     )
     await tx.done
     if (!workspace) throw new Error('Workspace information is missing.')
-    return { records: { workspace, projects, categories, tags, notebooks, sections, pages, objects, attachments }, blobs, revision: normalizeActivity(activity).revision }
+    return { records: { workspace, projects, tasks, templates, categories, tags, notebooks, sections, pages, objects, attachments }, blobs, revision: normalizeActivity(activity).revision }
   }
 
   async replaceAll(records: WorkspaceRecords, blobs: Map<string, Blob>, token: string | null): Promise<number> {

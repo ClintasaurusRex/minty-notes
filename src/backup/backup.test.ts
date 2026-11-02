@@ -100,7 +100,7 @@ describe('complete backup and restore', () => {
 
     const validated = await readArchive(downloads[0].bytes)
     if (!validated.ok) throw new Error(validated.errors.join('\n'))
-    expect(validated.summary.counts).toEqual({ projects: 0, categories: 0, tags: 0, notebooks: 1, sections: 1, pages: 2, objects: 2, attachments: 1 })
+    expect(validated.summary.counts).toEqual({ projects: 0, tasks: 0, templates: 0, categories: 0, tags: 0, notebooks: 1, sections: 1, pages: 2, objects: 2, attachments: 1 })
 
     // Clean workspace in a separate database.
     const clean = await freshStore()

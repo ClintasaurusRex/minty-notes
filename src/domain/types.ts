@@ -1,12 +1,12 @@
 /**
- * Core record types for the Minty Notes workspace (data format version 2).
+ * Core record types for the Minty Notes workspace (data format version 3).
  *
  * Every record has a stable ID. Links between records always use IDs,
  * never titles or folder names. See docs/DATA_FORMAT.md.
  */
 
 /** Version of the stored data and backup format. Bump with a migration. */
-export const FORMAT_VERSION = 2
+export const FORMAT_VERSION = 3
 
 /** Default notebook page width in CSS pixels (validated in Stage 0). */
 export const PAGE_WIDTH = 1200
@@ -130,13 +130,15 @@ export interface ProjectItem {
 
 /**
  * A saved file location. `path` is a local or network path shown for copying;
- * `url` is a web link (e.g. Dropbox) that opens in a new tab.
+ * `url` is a web link (e.g. Dropbox) that opens in a new tab (http/https only).
  */
 export interface FileLocation {
   id: string
   label: string
   kind: 'path' | 'url'
   value: string
+  /** What the file or folder is for (format 3; '' when empty). */
+  description: string
 }
 
 export interface Project {
@@ -206,10 +208,95 @@ export interface AttachmentMeta {
   createdAt: Timestamp
 }
 
+export type TaskStatus = 'todo' | 'doing' | 'done'
+export const TASK_STATUSES: TaskStatus[] = ['todo', 'doing', 'done']
+
+export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent'
+/** Lowest to highest. */
+export const TASK_PRIORITIES: TaskPriority[] = ['low', 'normal', 'high', 'urgent']
+
+/** A task on a project's board (format 3). */
+export interface Task {
+  id: string
+  /** Owning project. Tasks always belong to one project. */
+  projectId: string
+  title: string
+  /** Plain-text details. */
+  description: string
+  status: TaskStatus
+  priority: TaskPriority
+  /** Optional date-only deadline (`YYYY-MM-DD`, four-digit year). */
+  dueDate: DateOnly | null
+  /** Notes this task refers to (any page, by ID; the pages are not copied). */
+  linkedPageIds: string[]
+  /** Position within its status column (ascending). */
+  order: number
+  /** Set while the task is Done. */
+  completedAt: Timestamp | null
+  createdAt: Timestamp
+  updatedAt: Timestamp
+}
+
+/** A canvas object stored inside a template (no IDs: new ones are made on use). */
+export type TemplateObject =
+  | { type: 'text'; x: number; y: number; w: number; h: number; z: number; doc: RichTextDoc }
+  | { type: 'image'; x: number; y: number; w: number; h: number; z: number; attachmentId: string; alt: string }
+
+/** One note inside a template. */
+export interface TemplateNote {
+  title: string
+  categoryIds: string[]
+  tagIds: string[]
+  objects: TemplateObject[]
+}
+
+/** One task inside a project template. */
+export interface TemplateTask {
+  title: string
+  description: string
+  priority: TaskPriority
+  /** Links to notes of this template (indexes into `notes`). */
+  noteIndexes: number[]
+  /** Links to library pages (shared, by ID; never copied). */
+  pageIds: string[]
+}
+
+/** Reusable project settings (instance details such as name, customer, job number, and dates are not kept). */
+export interface TemplateProject {
+  status: ProjectStatus
+  description: string
+  categoryIds: string[]
+  /** Library pages to link (shared references, not copies). */
+  pinnedPageIds: string[]
+  equipment: ProjectItem[]
+  software: ProjectItem[]
+  fileLocations: FileLocation[]
+}
+
+/**
+ * A reusable definition (format 3). A note template holds one note; a project
+ * template holds project settings, its notes, and its tasks. Using a template
+ * always creates new, independent records with new IDs.
+ */
+export interface Template {
+  id: string
+  kind: 'note' | 'project'
+  name: string
+  description: string
+  notes: TemplateNote[]
+  /** Set for project templates only. */
+  project: TemplateProject | null
+  tasks: TemplateTask[]
+  createdAt: Timestamp
+  updatedAt: Timestamp
+}
+
 /** Everything that makes up a workspace (used by backup and restore). */
 export interface WorkspaceRecords {
   workspace: WorkspaceInfo
   projects: Project[]
+  tasks: Task[]
+  templates: Template[]
   categories: Category[]
   tags: Tag[]
   notebooks: Notebook[]

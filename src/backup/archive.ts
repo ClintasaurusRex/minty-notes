@@ -1,6 +1,8 @@
 import { unzip, zip, type AsyncZippable, type Unzipped } from 'fflate'
 import { isDateOnly } from '../domain/dates'
 import { validateRichTextDoc } from '../domain/richtext'
+import { isTaskPriority, isTaskStatus } from '../domain/tasks'
+import { templateAttachmentIds } from '../domain/templates'
 import { FORMAT_VERSION, PROJECT_STATUSES, type AttachmentMeta, type CanvasObject, type WorkspaceRecords } from '../domain/types'
 
 /**
@@ -33,8 +35,8 @@ export interface Manifest {
   app: { name: string; version: string }
   createdAt: string
   workspaceId: string
-  /** Format 2 adds projects, categories, and tags. */
-  counts: { projects?: number; categories?: number; tags?: number; notebooks: number; sections: number; pages: number; objects: number; attachments: number }
+  /** Format 2 adds projects, categories, and tags; format 3 adds tasks and templates. */
+  counts: { projects?: number; tasks?: number; templates?: number; categories?: number; tags?: number; notebooks: number; sections: number; pages: number; objects: number; attachments: number }
   records: { path: string; size: number; sha256: string }
   files: ManifestFile[]
 }
@@ -48,6 +50,7 @@ export interface BackupSummary {
   trashedPages: number
   archivedProjects: number
   trashedProjects: number
+  doneTasks: number
   attachmentBytes: number
 }
 
@@ -109,8 +112,8 @@ export async function buildArchive(records: WorkspaceRecords, blobs: Map<string,
   entries[README] = [
     encoder.encode(
       `Minty Notes full workspace backup\nCreated: ${manifest.createdAt}\n\n` +
-        `Restore it from Minty Notes → Settings → Restore. records.json holds projects, categories,\n` +
-        `tags, notes, notebooks, sections, links, and page layout. attachments/ holds the original image files.\n` +
+        `Restore it from Minty Notes → Settings → Restore. records.json holds projects, tasks, templates,\n` +
+        `categories, tags, notes, notebooks, sections, links, and page layout. attachments/ holds the original image files.\n` +
         `This is a complete working copy, not a redacted document for sharing.\n`,
     ),
     { level: 6 },
@@ -121,6 +124,8 @@ export async function buildArchive(records: WorkspaceRecords, blobs: Map<string,
 function countsOf(records: WorkspaceRecords): Required<Manifest['counts']> {
   return {
     projects: records.projects.length,
+    tasks: records.tasks.length,
+    templates: records.templates.length,
     categories: records.categories.length,
     tags: records.tags.length,
     notebooks: records.notebooks.length,
@@ -232,7 +237,7 @@ const isIdList = (v: unknown): v is string[] => Array.isArray(v) && v.every(isId
 function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
   if (!c.require(isObj(raw), 'records.json does not contain a records object.')) return null
   const r = raw as Obj
-  const lists = ['projects', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'objects', 'attachments'] as const
+  const lists = ['projects', 'tasks', 'templates', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'objects', 'attachments'] as const
   for (const key of lists) if (!c.require(Array.isArray(r[key]), `records.json is missing the ${key} list.`)) return null
   const ws = r.workspace
   if (!c.require(isObj(ws) && isId(ws.workspaceId) && isNum(ws.formatVersion) && isTime(ws.createdAt), 'Workspace information is missing or invalid.')) return null
@@ -291,7 +296,7 @@ function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
       isItemList(p.contacts, ['name', 'role', 'phone', 'email']) &&
       isItemList(p.equipment, ['name', 'detail']) &&
       isItemList(p.software, ['name', 'detail']) &&
-      isItemList(p.fileLocations, ['label', 'value']) &&
+      isItemList(p.fileLocations, ['label', 'value', 'description']) &&
       (p.fileLocations as Obj[]).every((f) => f.kind === 'path' || f.kind === 'url') &&
       isIdList(p.pinnedPageIds) &&
       isIdList(p.hiddenPageIds) &&
@@ -330,6 +335,77 @@ function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
     if (c.require(isStr(o.fileName) && isStr(o.mimeType) && isNum(o.size) && isStr(o.sha256), `Attachment #${i + 1} is invalid.`)) unique('attachment', o.id as string)
   })
   const attachmentIds = idsOf(attachments)
+
+  const tasks = r.tasks as unknown[]
+  tasks.forEach((t, i) => {
+    if (!checkCommon(c, 'Task', t, i)) return
+    const ok =
+      isId(t.projectId) &&
+      isStr(t.title) &&
+      isStr(t.description) &&
+      isTaskStatus(t.status) &&
+      isTaskPriority(t.priority) &&
+      (t.dueDate === null || isDateOnly(t.dueDate)) &&
+      isIdList(t.linkedPageIds) &&
+      isNum(t.order) &&
+      (t.completedAt === null || isTime(t.completedAt))
+    if (!c.require(ok, `Task #${i + 1} is invalid.`)) return
+    unique('task', t.id as string)
+    c.require(projectIds.has(t.projectId), `Task “${t.title}” refers to a missing project.`)
+    for (const id of t.linkedPageIds as string[]) c.require(pageIds.has(id), `Task “${t.title}” links to a missing page.`)
+  })
+
+  const templates = r.templates as unknown[]
+  templates.forEach((t, i) => {
+    if (!checkCommon(c, 'Template', t, i)) return
+    const name = String(t.name)
+    const basicOk = (t.kind === 'note' || t.kind === 'project') && isStr(t.name) && isStr(t.description) && Array.isArray(t.notes) && Array.isArray(t.tasks) && (t.project === null || isObj(t.project))
+    if (!c.require(basicOk, `Template #${i + 1} is invalid.`)) return
+    const notes = t.notes as unknown[]
+    c.require(t.kind === 'project' || (notes.length === 1 && t.project === null), `Template “${name}” is not a valid note template.`)
+    notes.forEach((n, ni) => {
+      if (!c.require(isObj(n) && isStr(n.title) && isIdList(n.categoryIds) && isIdList(n.tagIds) && Array.isArray(n.objects), `Template “${name}” note #${ni + 1} is invalid.`)) return
+      const note = n as Obj
+      for (const id of note.categoryIds as string[]) c.require(categoryIds.has(id), `Template “${name}” refers to a missing category.`)
+      for (const id of note.tagIds as string[]) c.require(tagIds.has(id), `Template “${name}” refers to a missing tag.`)
+      ;(note.objects as unknown[]).forEach((o) => {
+        const geomOk = isObj(o) && isNum(o.x) && isNum(o.y) && isNum(o.w) && isNum(o.h) && isNum(o.z) && o.x >= 0 && o.y >= 0 && o.w > 0 && o.h >= 0
+        if (!c.require(geomOk, `Template “${name}” has an object with invalid placement.`)) return
+        const obj = o as Obj
+        if (obj.type === 'text') {
+          const problem = validateRichTextDoc(obj.doc)
+          c.require(problem === null, `Text in template “${name}” is not valid: ${problem}`)
+        } else if (obj.type === 'image') {
+          if (c.require(isId(obj.attachmentId) && isStr(obj.alt), `Template “${name}” has an invalid image.`)) c.require(attachmentIds.has(obj.attachmentId), `Template “${name}” refers to a missing attachment.`)
+        } else c.fail(`Template “${name}” has an object of unknown type.`)
+      })
+    })
+    if (isObj(t.project)) {
+      const p = t.project
+      const ok =
+        t.kind === 'project' &&
+        PROJECT_STATUSES.includes(p.status as never) &&
+        isStr(p.description) &&
+        isIdList(p.categoryIds) &&
+        isIdList(p.pinnedPageIds) &&
+        isItemList(p.equipment, ['name', 'detail']) &&
+        isItemList(p.software, ['name', 'detail']) &&
+        isItemList(p.fileLocations, ['label', 'value', 'description']) &&
+        (p.fileLocations as Obj[]).every((f) => f.kind === 'path' || f.kind === 'url')
+      if (c.require(ok, `Template “${name}” has invalid project settings.`)) {
+        for (const id of p.categoryIds as string[]) c.require(categoryIds.has(id), `Template “${name}” refers to a missing category.`)
+        for (const id of p.pinnedPageIds as string[]) c.require(pageIds.has(id), `Template “${name}” links to a missing page.`)
+      }
+    } else c.require(t.kind === 'note', `Template “${name}” has no project settings.`)
+    ;(t.tasks as unknown[]).forEach((x, xi) => {
+      const ok = isObj(x) && isStr(x.title) && isStr(x.description) && isTaskPriority(x.priority) && Array.isArray(x.noteIndexes) && isIdList(x.pageIds)
+      if (!c.require(ok, `Template “${name}” task #${xi + 1} is invalid.`)) return
+      const task = x as Obj
+      c.require((task.noteIndexes as unknown[]).every((n) => Number.isInteger(n) && (n as number) >= 0 && (n as number) < notes.length), `Template “${name}” task #${xi + 1} links to a missing template note.`)
+      for (const id of task.pageIds as string[]) c.require(pageIds.has(id), `Template “${name}” links to a missing page.`)
+    })
+    unique('template', t.id as string)
+  })
 
   const objects = r.objects as unknown[]
   objects.forEach((o, i) => {
@@ -396,20 +472,39 @@ export function migrateRecordsV1toV2(raw: unknown): void {
 }
 
 /**
+ * Format 2 → 3 (Stage 3): add the empty tasks and templates lists and an empty
+ * `description` on every project file location. Nothing else changes.
+ */
+export function migrateRecordsV2toV3(raw: unknown): void {
+  if (!isObj(raw)) return
+  for (const key of ['tasks', 'templates'] as const) if (raw[key] === undefined) raw[key] = []
+  if (Array.isArray(raw.projects)) {
+    raw.projects = raw.projects.map((p: unknown) =>
+      isObj(p) && Array.isArray(p.fileLocations) ? { ...p, fileLocations: p.fileLocations.map((f: unknown) => (isObj(f) && f.description === undefined ? { ...f, description: '' } : f)) } : p,
+    )
+  }
+  if (isObj(raw.workspace) && isNum(raw.workspace.formatVersion) && raw.workspace.formatVersion < 3) raw.workspace = { ...raw.workspace, formatVersion: 3 }
+}
+
+/**
  * App 0.2.0 stored any value Chrome's date field produced, including a
  * five-digit year (e.g. `20261-12-15`), which this validation rejects. So a
  * backup is not refused as a whole for that: an invalid due date is cleared,
  * with a warning naming the project and the value.
  */
 function repairDueDates(raw: unknown, warnings: string[]): void {
-  if (!isObj(raw) || !Array.isArray(raw.projects)) return
-  raw.projects = raw.projects.map((p: unknown) => {
-    if (isObj(p) && typeof p.dueDate === 'string' && !isDateOnly(p.dueDate)) {
-      warnings.push(`Project “${String(p.name)}” had an invalid due date (${p.dueDate}); it will be restored without a due date.`)
-      return { ...p, dueDate: null }
-    }
-    return p
-  })
+  if (!isObj(raw)) return
+  for (const [key, noun, label] of [['projects', 'Project', 'name'], ['tasks', 'Task', 'title']] as const) {
+    const list = raw[key]
+    if (!Array.isArray(list)) continue
+    raw[key] = list.map((p: unknown) => {
+      if (isObj(p) && typeof p.dueDate === 'string' && !isDateOnly(p.dueDate)) {
+        warnings.push(`${noun} “${String(p[label])}” had an invalid due date (${p.dueDate}); it will be restored without a due date.`)
+        return { ...p, dueDate: null }
+      }
+      return p
+    })
+  }
 }
 
 /**
@@ -447,6 +542,7 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
     repairVersion1(raw, warnings)
     migrateRecordsV1toV2(raw)
   }
+  if (m.formatVersion <= 2) migrateRecordsV2toV3(raw)
   repairDueDates(raw, warnings)
   const checker = new Checker(errors)
   const records = validateRecords(raw, checker)
@@ -477,6 +573,7 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
   if (errors.length) return { ok: false, errors }
 
   const referenced = new Set(records.objects.filter((o): o is Extract<CanvasObject, { type: 'image' }> => o.type === 'image').map((o) => o.attachmentId))
+  for (const t of records.templates) for (const id of templateAttachmentIds(t)) referenced.add(id)
   const unused = records.attachments.filter((a) => !referenced.has(a.id)).length
   if (unused > 0) warnings.push(`${unused} stored image${unused === 1 ? ' is' : 's are'} not placed on any page (kept for completeness).`)
 
@@ -494,6 +591,7 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
       trashedPages: records.pages.filter((p) => p.trashedAt).length,
       archivedProjects: records.projects.filter((p) => p.archivedAt && !p.trashedAt).length,
       trashedProjects: records.projects.filter((p) => p.trashedAt).length,
+      doneTasks: records.tasks.filter((t) => t.status === 'done').length,
       attachmentBytes,
     },
   }

@@ -366,7 +366,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
         readOnly={readOnly}
         empty="No saved locations. Add a project folder path (to copy) or a Dropbox web link (to open)."
         addLabel="Add location"
-        make={() => ({ id: newId(), label: '', kind: 'path', value: '' })}
+        make={() => ({ id: newId(), label: '', kind: 'path', value: '', description: '' })}
         onChange={(fileLocations) => set({ fileLocations })}
         columns={[
           { key: 'label', label: 'Location name', width: '160px' },

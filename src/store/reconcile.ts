@@ -1,4 +1,5 @@
 import { docToPlainText } from '../domain/richtext'
+import { pruneTemplateRefs, templatePageIds } from '../domain/templates'
 import {
   PAGE_WIDTH,
   newId,
@@ -12,6 +13,8 @@ import {
   type RichTextNode,
   type Section,
   type Tag,
+  type Task,
+  type Template,
   type TextObject,
 } from '../domain/types'
 import { emptyChangeSet, type ChangeSet } from '../storage/repository'
@@ -35,13 +38,14 @@ import { emptyChangeSet, type ChangeSet } from '../storage/repository'
  * applied safely goes into a separate "Recovered changes" note in the Inbox.
  * Bookkeeping fields (`updatedAt`) never count as an intended change.
  *
- * ID lists (categories, tags, a project's pinned/hidden references) are merged
+ * ID lists (categories, tags, a project's pinned/hidden references, a task's
+ * linked notes) are merged
  * as sets — additions and removals from both windows are kept — and afterwards
  * every link is checked, so nothing points at a record that no longer exists.
  */
 
-export type RecordKind = 'projects' | 'categories' | 'tags' | 'notebooks' | 'sections' | 'pages' | 'objects'
-type AnyRecord = Project | Category | Tag | Notebook | Section | Page | CanvasObject
+export type RecordKind = 'projects' | 'tasks' | 'templates' | 'categories' | 'tags' | 'notebooks' | 'sections' | 'pages' | 'objects'
+type AnyRecord = Project | Task | Template | Category | Tag | Notebook | Section | Page | CanvasObject
 
 export interface HeldChange {
   kind: RecordKind
@@ -52,6 +56,8 @@ export interface HeldChange {
 
 export interface LatestRecords {
   projects: Record<string, Project>
+  tasks: Record<string, Task>
+  templates: Record<string, Template>
   categories: Record<string, Category>
   tags: Record<string, Tag>
   notebooks: Record<string, Notebook>
@@ -80,7 +86,7 @@ export interface ReconcileResult {
 
 const IGNORED_FIELDS = new Set(['updatedAt'])
 /** Fields holding lists of IDs; merged as sets instead of conflicting. */
-const SET_FIELDS = new Set(['categoryIds', 'tagIds', 'pinnedPageIds', 'hiddenPageIds'])
+const SET_FIELDS = new Set(['categoryIds', 'tagIds', 'pinnedPageIds', 'hiddenPageIds', 'linkedPageIds'])
 
 /** theirs + what this window added − what this window removed (theirs' order first). */
 function mergeIdSets(base: string[], mine: string[], theirs: string[]): string[] {
@@ -160,11 +166,11 @@ function fieldText(kind: RecordKind, field: string, value: unknown, latest: Late
   if (typeof value === 'string' || typeof value === 'number') return String(value) || '(empty)'
   if (value === null || value === undefined) return '(empty)'
   if (Array.isArray(value)) {
-    const lookup: Record<string, Record<string, { name?: string; title?: string }>> = { categoryIds: latest.categories, tagIds: latest.tags, pinnedPageIds: latest.pages, hiddenPageIds: latest.pages }
+    const lookup: Record<string, Record<string, { name?: string; title?: string }>> = { categoryIds: latest.categories, tagIds: latest.tags, pinnedPageIds: latest.pages, hiddenPageIds: latest.pages, linkedPageIds: latest.pages }
     const names = value.map((v) => {
       if (typeof v === 'string') return lookup[field]?.[v]?.name ?? lookup[field]?.[v]?.title ?? v
       const o = v as Record<string, string>
-      return [o.name ?? o.label, o.detail ?? o.role ?? o.value].filter(Boolean).join(' — ')
+      return [o.name ?? o.label ?? o.title, o.detail ?? o.role ?? o.value].filter(Boolean).join(' — ')
     })
     return names.length ? names.join(', ') : '(none)'
   }
@@ -194,6 +200,11 @@ const FIELD_LABELS: Record<string, string> = {
   tagIds: 'Tags',
   pinnedPageIds: 'Pinned references',
   hiddenPageIds: 'Hidden references',
+  priority: 'Priority',
+  linkedPageIds: 'Linked notes',
+  notes: 'Template notes',
+  tasks: 'Template tasks',
+  project: 'Project settings',
 }
 
 const inProject = (p: Page, projectId: string) => p.location.kind === 'project' && p.location.projectId === projectId
@@ -220,6 +231,8 @@ export function withoutRefusedCascades(held: HeldChange[], latest: LatestRecords
   const theirsOf = (h: HeldChange) => (latest[h.kind] as Record<string, AnyRecord>)[h.id] as AnyRecord | undefined
   const deletions = (kind: RecordKind) => held.filter((h) => h.kind === kind && !h.mine && h.base && theirsOf(h))
   const refused = { pages: new Set<string>(), projects: new Set<string>(), categories: new Set<string>(), tags: new Set<string>() }
+  // Tasks this window deletes that the other window did not change.
+  const tasksGone = new Set(deletions('tasks').filter((h) => !isIntendedChange(h.base, theirsOf(h)!)).map((h) => h.id))
 
   for (const kind of ['categories', 'tags'] as const) {
     for (const h of deletions(kind)) if (isIntendedChange(h.base, theirsOf(h)!)) refused[kind].add(h.id)
@@ -238,7 +251,8 @@ export function withoutRefusedCascades(held: HeldChange[], latest: LatestRecords
         .filter((x) => x.kind === 'pages' && x.base && x.mine && inProject(x.base as Page, h.id) && (x.mine as Page).location.kind === 'inbox' && (x.mine as Page).trashedAt)
         .map((x) => x.id),
     )
-    const stillUsed = Object.values(latest.pages).some((p) => inProject(p, h.id) && !movedOut.has(p.id))
+    const stillUsed =
+      Object.values(latest.pages).some((p) => inProject(p, h.id) && !movedOut.has(p.id)) || Object.values(latest.tasks).some((t) => t.projectId === h.id && !tasksGone.has(t.id))
     if (isIntendedChange(h.base, theirsOf(h)!) || stillUsed) refused.projects.add(h.id)
   }
   if (Object.values(refused).every((s) => s.size === 0)) return held
@@ -247,6 +261,8 @@ export function withoutRefusedCascades(held: HeldChange[], latest: LatestRecords
   for (const h of held) {
     // The content of a page whose deletion is refused stays.
     if (h.kind === 'objects' && !h.mine && h.base && refused.pages.has((h.base as CanvasObject).pageId)) continue
+    // The tasks of a project whose deletion is refused stay.
+    if (h.kind === 'tasks' && !h.mine && h.base && refused.projects.has((h.base as Task).projectId)) continue
     if (!h.mine || !h.base) {
       out.push(h)
       continue
@@ -266,9 +282,44 @@ export function withoutRefusedCascades(held: HeldChange[], latest: LatestRecords
     mine = restoreIds(mine, h.base, 'tagIds', refused.tags)
     mine = restoreIds(mine, h.base, 'pinnedPageIds', refused.pages)
     mine = restoreIds(mine, h.base, 'hiddenPageIds', refused.pages)
+    mine = restoreIds(mine, h.base, 'linkedPageIds', refused.pages)
+    if (h.kind === 'templates') mine = restoreTemplateRefs(mine as Template, h.base as Template, refused)
     out.push(mine === h.mine ? h : { ...h, mine })
   }
   return out
+}
+
+/** Put back template references this window removed only because of a refused deletion. */
+function restoreTemplateRefs(mine: Template, base: Template, refused: { pages: Set<string>; categories: Set<string>; tags: Set<string> }): Template {
+  const back = (b: string[] | undefined, m: string[], set: Set<string>) => {
+    const missing = (b ?? []).filter((id) => set.has(id) && !m.includes(id))
+    return missing.length ? [...m, ...missing] : m
+  }
+  let changed = false
+  const track = <T,>(before: T, after: T) => {
+    if (before !== after) changed = true
+    return after
+  }
+  const notes = mine.notes.map((n, i) => {
+    const bn = base.notes[i]
+    if (!bn) return n
+    const categoryIds = track(n.categoryIds, back(bn.categoryIds, n.categoryIds, refused.categories))
+    const tagIds = track(n.tagIds, back(bn.tagIds, n.tagIds, refused.tags))
+    return categoryIds === n.categoryIds && tagIds === n.tagIds ? n : { ...n, categoryIds, tagIds }
+  })
+  const project =
+    mine.project && base.project
+      ? {
+          ...mine.project,
+          categoryIds: track(mine.project.categoryIds, back(base.project.categoryIds, mine.project.categoryIds, refused.categories)),
+          pinnedPageIds: track(mine.project.pinnedPageIds, back(base.project.pinnedPageIds, mine.project.pinnedPageIds, refused.pages)),
+        }
+      : mine.project
+  const tasks = mine.tasks.map((t, i) => {
+    const pageIds = track(t.pageIds, back(base.tasks[i]?.pageIds, t.pageIds, refused.pages))
+    return pageIds === t.pageIds ? t : { ...t, pageIds }
+  })
+  return changed ? { ...mine, notes, project, tasks } : mine
 }
 
 export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRecords, now: string): ReconcileResult {
@@ -280,6 +331,8 @@ export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRe
   // Working view of the workspace after the writes decided so far.
   const view = {
     projects: { ...latest.projects },
+    tasks: { ...latest.tasks },
+    templates: { ...latest.templates },
     categories: { ...latest.categories },
     tags: { ...latest.tags },
     notebooks: { ...latest.notebooks },
@@ -301,7 +354,7 @@ export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRe
     const rec = (h.mine ?? h.base)!
     if (h.kind === 'objects') return `On page “${pageName((rec as CanvasObject).pageId)}”`
     const title = (rec as Notebook).title ?? (rec as Project).name
-    const noun = { pages: 'Page', sections: 'Section', notebooks: 'Notebook', projects: 'Project', categories: 'Category', tags: 'Tag' }[h.kind]
+    const noun = { pages: 'Page', sections: 'Section', notebooks: 'Notebook', projects: 'Project', tasks: 'Task', templates: 'Template', categories: 'Category', tags: 'Tag' }[h.kind]
     return `${noun} “${title}”`
   }
   const recoverRecord = (h: HeldChange, reason: string) => {
@@ -313,7 +366,9 @@ export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRe
     } else {
       const fields = h.base
         ? Object.keys(FIELD_LABELS).filter((f) => !sameValue((h.base as never)[f], (rec as never)[f]) && f in (rec as object))
-        : ['title' in (rec as object) ? 'title' : 'name']
+        : h.kind === 'tasks'
+          ? ['title', 'description', 'priority', 'dueDate', 'linkedPageIds'].filter((f) => !sameValue((rec as never)[f], f === 'linkedPageIds' ? [] : f === 'priority' ? 'normal' : f === 'dueDate' ? null : ''))
+          : ['title' in (rec as object) ? 'title' : 'name']
       const detail = fields.map((f) => `${FIELD_LABELS[f]}: ${fieldText(h.kind, f, (rec as never)[f], latest)}`).join('; ') || 'Details changed'
       recovered.push({ type: 'note', source: sourceOf(h), reason, detail })
     }
@@ -329,10 +384,12 @@ export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRe
       return true
     }
     if (kind === 'objects') return !!view.pages[(rec as CanvasObject).pageId]
+    if (kind === 'tasks') return !!view.projects[(rec as Task).projectId]
     return true
   }
 
-  const order: RecordKind[] = ['categories', 'tags', 'projects', 'notebooks', 'sections', 'pages', 'objects']
+  // Parents before children; deletions run in reverse (tasks before their project).
+  const order: RecordKind[] = ['categories', 'tags', 'projects', 'tasks', 'templates', 'notebooks', 'sections', 'pages', 'objects']
   const ofKind = (k: RecordKind) => held.filter((h) => h.kind === k)
 
   // 1) Creations and updates, parents first.
@@ -356,7 +413,7 @@ export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRe
           recovered.push({ type: 'note', source: sourceOf(h), reason: 'Its section was deleted in the other window.', detail: 'The page was created in the Inbox instead.' })
           applied++
         } else {
-          recoverRecord(h, `It was added to ${kind === 'objects' ? 'a page' : kind === 'sections' ? 'a notebook' : 'a parent'} that was deleted in the other window.`)
+          recoverRecord(h, `It was added to ${kind === 'objects' ? 'a page' : kind === 'sections' ? 'a notebook' : kind === 'tasks' ? 'a project' : 'a parent'} that was deleted in the other window.`)
         }
         continue
       }
@@ -408,7 +465,9 @@ export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRe
       if (!blocked && kind === 'pages') blocked = Object.values(view.objects).some((o) => o.pageId === h.id)
       if (!blocked && kind === 'sections') blocked = Object.values(view.pages).some((p) => p.location.kind === 'section' && p.location.sectionId === h.id && !p.trashedAt)
       if (!blocked && kind === 'notebooks') blocked = Object.values(view.sections).some((s) => s.notebookId === h.id)
-      if (!blocked && kind === 'projects') blocked = Object.values(view.pages).some((p) => p.location.kind === 'project' && p.location.projectId === h.id)
+      if (!blocked && kind === 'projects') {
+        blocked = Object.values(view.pages).some((p) => p.location.kind === 'project' && p.location.projectId === h.id) || Object.values(view.tasks).some((t) => t.projectId === h.id)
+      }
       if (blocked) {
         recovered.push({ type: 'note', source: sourceOf({ ...h, mine: null }), reason: 'It was deleted in this window but changed or still in use in the other window, so it was kept.', detail: 'Delete it again if it is no longer needed.' })
         continue
@@ -471,6 +530,20 @@ function repairLinks(view: View, now: string, put: (kind: RecordKind, rec: AnyRe
         fix('hiddenPageIds', view.pages)
       }
       if (changed) put(kind, { ...next, updatedAt: now } as unknown as AnyRecord)
+    }
+  }
+  for (const rec of Object.values(view.tasks)) {
+    const task = rec as Task
+    const kept = keep(task.linkedPageIds, view.pages)
+    if (kept.length !== task.linkedPageIds.length) put('tasks', { ...task, linkedPageIds: kept, updatedAt: now })
+  }
+  const refCount = (t: Template) => templatePageIds(t).length + (t.project?.categoryIds.length ?? 0) + t.notes.reduce((n, x) => n + x.categoryIds.length + x.tagIds.length, 0)
+  for (const rec of Object.values(view.templates)) {
+    const t = rec as Template
+    const next = pruneTemplateRefs(t, { category: (id) => id in view.categories, tag: (id) => id in view.tags, page: (id) => id in view.pages })
+    if (next !== t) {
+      removed += refCount(t) - refCount(next)
+      put('templates', { ...next, updatedAt: now })
     }
   }
   return removed
