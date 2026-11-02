@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useServices, useWorkspace } from '../app/context'
-import { dueState } from '../domain/dates'
+import { dueState, todayDateOnly } from '../domain/dates'
+import { filterTasks, nextTask, DEFAULT_TASK_FILTERS } from '../domain/tasks'
 import { isPageVisible, isProjectOpen, projectNotes, projectReferences } from '../domain/references'
 import { pageContext } from '../domain/search'
-import type { Page, Project } from '../domain/types'
+import type { Page, Project, Template } from '../domain/types'
 import { ReadOnlyError } from '../store/workspaceStore'
 import { relativeTime } from './format'
 import { IconInbox, IconLeaf, IconPin, IconPlus, IconQuick } from './icons'
@@ -11,6 +12,8 @@ import { useNav } from './nav'
 import { notify } from './notices'
 import { STATUS_LABELS } from './projectFormat'
 import { readRecent } from './recent'
+import { DueBadge, PriorityBadge } from './TaskBoard'
+import { TemplatePicker } from './Templates'
 
 const STATUS_RANK = { active: 0, 'on-hold': 1, planned: 2, complete: 3 }
 
@@ -20,6 +23,7 @@ function ProjectCard({ project }: { project: Project }) {
   const notes = projectNotes(project.id, data.pages)
   const refs = projectReferences(project, data)
   const due = project.dueDate ? dueState(project.dueDate) : null
+  const next = nextTask(Object.values(data.tasks), project.id)
   return (
     <li>
       <button type="button" className="project-tile" onClick={() => nav.openProject(project.id)} data-testid="project-tile">
@@ -34,6 +38,15 @@ function ProjectCard({ project }: { project: Project }) {
         <span className="tile-foot">
           {notes.length} note{notes.length === 1 ? '' : 's'} · {refs.pinned.length + refs.suggested.length} reference{refs.pinned.length + refs.suggested.length === 1 ? '' : 's'}
           {due && <span className={`due due-${due.tone}`}> · {due.text}</span>}
+        </span>
+        <span className="tile-next" data-testid="tile-next-task">
+          {next ? (
+            <>
+              Next: {next.title} {next.dueDate && <DueBadge task={next} />}
+            </>
+          ) : (
+            <span className="muted">No open tasks</span>
+          )}
         </span>
       </button>
     </li>
@@ -83,6 +96,29 @@ export function HomeView() {
   const inboxCount = Object.values(data.pages).filter((p) => !p.trashedAt && p.location.kind === 'inbox').length
   const empty = Object.keys(data.projects).length === 0 && Object.keys(data.pages).length === 0
 
+  // Overdue and upcoming (next 7 days) open tasks in open projects.
+  const today = todayDateOnly()
+  const openProjects = Object.fromEntries(Object.entries(data.projects).filter(([, p]) => isProjectOpen(p)))
+  const overdueTasks = filterTasks(Object.values(data.tasks), openProjects, { ...DEFAULT_TASK_FILTERS, due: 'overdue' }, today)
+  const upcomingTasks = filterTasks(Object.values(data.tasks), openProjects, { ...DEFAULT_TASK_FILTERS, due: 'week' }, today)
+  const dueTasks = [...overdueTasks, ...upcomingTasks].slice(0, 8)
+
+  const fromTemplate = (t: Template) => {
+    try {
+      if (t.kind === 'project') {
+        const name = window.prompt('Name for the new project:', t.name)
+        if (name === null) return
+        nav.openProject(store.createProjectFromTemplate(t.id, name).id)
+      } else {
+        const page = store.createPageFromTemplate(t.id, { kind: 'inbox' })
+        nav.openPage(page.id)
+      }
+    } catch (err) {
+      if (err instanceof ReadOnlyError) notify('info', err.message)
+      else throw err
+    }
+  }
+
   const newProject = () => {
     try {
       const p = store.createProject({ name: 'New project' })
@@ -106,6 +142,7 @@ export function HomeView() {
               <IconPlus size={16} /> New project
             </button>
           )}
+          <TemplatePicker kinds={['note', 'project']} label="New from template…" onPick={fromTemplate} />
           {recentPages[0] && (
             <button type="button" className="btn btn-ghost" onClick={() => nav.openPage(recentPages[0].page.id, recentPages[0].entry.projectId)}>
               Continue “{recentPages[0].page.title || 'Untitled'}”
@@ -140,6 +177,31 @@ export function HomeView() {
           <ul className="tile-grid">
             {open.map((p) => (
               <ProjectCard key={p.id} project={p} />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section aria-labelledby="due-h" className="home-section" data-testid="home-due-tasks">
+        <h2 id="due-h">
+          Overdue and upcoming tasks
+          <button type="button" className="link-btn small-link" onClick={() => nav.go('tasks')}>
+            All tasks
+          </button>
+        </h2>
+        {dueTasks.length === 0 ? (
+          <p className="muted small">Nothing overdue or due in the next 7 days.</p>
+        ) : (
+          <ul className="ref-list">
+            {dueTasks.map((t) => (
+              <li key={t.id}>
+                <button type="button" className="ref-open" onClick={() => nav.openProject(t.projectId, { tab: 'tasks', taskId: t.id })}>
+                  <span className="ref-title">{t.title}</span>
+                  <span className="ref-meta task-meta">
+                    {data.projects[t.projectId]?.name} <PriorityBadge priority={t.priority} /> <DueBadge task={t} />
+                  </span>
+                </button>
+              </li>
             ))}
           </ul>
         )}

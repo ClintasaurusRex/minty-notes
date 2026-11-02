@@ -203,3 +203,9 @@ export const IconEyeOff = (p: IconProps) => (
     <path d="M3 3l18 18M10.6 5.1A10.5 10.5 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4M6.6 6.6C3.8 8.5 2 12 2 12s3.5 7 10 7a10 10 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2" />
   </Svg>
 )
+export const IconTasks = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="4" y="4" width="16" height="16" rx="2.5" />
+    <path d="m8 10 2 2 4-4M8 16h8" />
+  </Svg>
+)

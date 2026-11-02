@@ -129,9 +129,12 @@ test('archive, trash, and delete keep shared pages; projects, links, tags, and i
   await page.getByRole('button', { name: 'Add software' }).click()
   await page.getByLabel('Software 1').fill('VTScada')
   await page.getByLabel('Version 1').fill('12.1.40')
-  await page.getByRole('button', { name: 'Add location' }).click()
-  await page.getByLabel('Location name 1').fill('Job folder')
-  await page.getByLabel('Path or link 1').fill('D:\\Dropbox\\Jobs\\J-3100')
+  // File locations live on the Files tab (Stage 3).
+  await page.getByTestId('tab-files').click()
+  await page.getByRole('button', { name: 'Add local path' }).click()
+  await page.getByLabel('Name of location 1').fill('Job folder')
+  await page.getByLabel('Path of location 1').fill('D:\\Dropbox\\Jobs\\J-3100')
+  await page.getByTestId('tab-overview').click()
   await expect(page.getByTestId('ref-suggested')).toContainText('Panel wiring standard')
 
   // A project note with a pasted screenshot and a tag.
@@ -183,7 +186,9 @@ test('archive, trash, and delete keep shared pages; projects, links, tags, and i
   await expect(fresh.getByLabel('Customer')).toHaveValue('Example Water')
   await expect(fresh.getByLabel('Due date')).toHaveValue('2026-12-15')
   await expect(fresh.getByLabel('Version 1')).toHaveValue('12.1.40')
-  await expect(fresh.getByLabel('Path or link 1')).toHaveValue('D:\\Dropbox\\Jobs\\J-3100')
+  await fresh.getByTestId('tab-files').click()
+  await expect(fresh.getByLabel('Path of location 1')).toHaveValue('D:\\Dropbox\\Jobs\\J-3100')
+  await fresh.getByTestId('tab-overview').click()
   await expect(fresh.getByTestId('ref-suggested')).toContainText('Panel wiring standard')
   await fresh.locator('.navigator').getByRole('button', { name: /Site walk/ }).click()
   await expect(fresh.locator('.obj-text')).toHaveText('Cabinet 2 needs a new breaker')

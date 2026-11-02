@@ -3,15 +3,20 @@ import { useServices, useWorkspace } from '../app/context'
 import { dueState } from '../domain/dates'
 import { linkedProjects, projectNotes, projectReferences, sharedCategoryIds } from '../domain/references'
 import { normalize } from '../domain/search'
-import { newId, PROJECT_STATUSES, type Contact, type FileLocation, type Page, type Project, type ProjectItem, type ProjectStatus } from '../domain/types'
+import { columnTasks, nextTask } from '../domain/tasks'
+import { newId, PROJECT_STATUSES, type Contact, type Page, type Project, type ProjectItem, type ProjectStatus } from '../domain/types'
 import { ReadOnlyError } from '../store/workspaceStore'
+import { copyText, saveAsTemplate } from './actions'
 import { relativeTime } from './format'
-import { IconArchive, IconCopy, IconExternal, IconEye, IconEyeOff, IconPin, IconPlus, IconRestore, IconTrash } from './icons'
+import { FilesTab } from './FilesTab'
+import { IconArchive, IconCopy, IconEye, IconEyeOff, IconPin, IconPlus, IconRestore, IconTrash } from './icons'
 import { LabelPicker } from './LabelPicker'
 import { locationLabel } from './locations'
-import { useNav } from './nav'
+import { useNav, type ProjectTab } from './nav'
 import { notify } from './notices'
 import { safeUrl, STATUS_LABELS } from './projectFormat'
+import { DueBadge, PriorityBadge, TaskBoard } from './TaskBoard'
+import { TemplatePicker } from './Templates'
 
 function guard(fn: () => void) {
   try {
@@ -19,15 +24,6 @@ function guard(fn: () => void) {
   } catch (err) {
     if (err instanceof ReadOnlyError) notify('info', err.message)
     else throw err
-  }
-}
-
-async function copyText(text: string, what: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-    notify('success', `${what} copied`)
-  } catch {
-    notify('error', 'The browser did not allow copying. Select the text and copy it instead.')
   }
 }
 
@@ -210,13 +206,69 @@ function PinFinder({ project }: { project: Project }) {
   )
 }
 
-export function ProjectView({ projectId }: { projectId: string }) {
+const TABS: { id: ProjectTab; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'tasks', label: 'Tasks' },
+  { id: 'files', label: 'Files' },
+]
+
+/** Open tasks for the overview: Doing first, then by due date and priority. */
+function NextTasks({ project, onOpenTask }: { project: Project; onOpenTask: (id: string) => void }) {
+  const tasks = useWorkspace((s) => s.data.tasks)
+  const all = Object.values(tasks)
+  const open = [...columnTasks(all, project.id, 'doing'), ...columnTasks(all, project.id, 'todo')]
+  const next = nextTask(all, project.id)
+  const shown = next ? [next, ...open.filter((t) => t.id !== next.id)].slice(0, 5) : []
+  const done = columnTasks(all, project.id, 'done').length
+  const nav = useNav()
+  return (
+    <section className="card project-card" aria-labelledby="next-h">
+      <div className="card-head">
+        <h2 id="next-h">Next tasks</h2>
+        <button type="button" className="btn btn-small" onClick={() => nav.openProject(project.id, { tab: 'tasks' })}>
+          Open board
+        </button>
+      </div>
+      {shown.length === 0 ? (
+        <p className="muted small">{done > 0 ? `All ${done} task${done === 1 ? ' is' : 's are'} done.` : 'No tasks yet. Add them on the Tasks tab.'}</p>
+      ) : (
+        <ul className="ref-list">
+          {shown.map((t) => (
+            <li key={t.id} className="ref-row">
+              <button type="button" className="ref-open" onClick={() => onOpenTask(t.id)}>
+                <span className="ref-title">{t.title}</span>
+                <span className="ref-meta task-meta">
+                  <span className="badge">{t.status === 'doing' ? 'Doing' : 'To do'}</span> <PriorityBadge priority={t.priority} /> <DueBadge task={t} />
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="muted small">
+        {open.length} open · {done} done
+      </p>
+    </section>
+  )
+}
+
+interface ProjectViewProps {
+  projectId: string
+  tab: ProjectTab
+  onTab: (tab: ProjectTab) => void
+  /** Task whose editor is open on the board. */
+  openTaskId: string | null
+  onOpenTask: (id: string | null) => void
+}
+
+export function ProjectView({ projectId, tab, onTab, openTaskId, onOpenTask }: ProjectViewProps) {
   const { store } = useServices()
   const nav = useNav()
   const data = useWorkspace((s) => s.data)
   const readOnly = useWorkspace((s) => s.readOnly)
   const project = data.projects[projectId]
   if (!project) return <div className="empty-main"><p className="muted">This project no longer exists.</p></div>
+  const taskCount = Object.values(data.tasks).filter((t) => t.projectId === project.id && t.status !== 'done').length
 
   const set = (patch: Partial<Project>) => guard(() => store.updateProject(project.id, patch))
   const notes = projectNotes(project.id, data.pages)
@@ -261,6 +313,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <span className="spacer" />
           {!readOnly && !project.trashedAt && (
             <>
+              <button type="button" className="btn btn-small" onClick={() => void saveAsTemplate('project', `${project.name} template`, (name) => store.createTemplateFromProject(project.id, name))}>
+                Save as template
+              </button>
               <button type="button" className="btn btn-small" onClick={() => guard(() => store.setProjectArchived(project.id, !project.archivedAt))}>
                 <IconArchive size={14} /> {project.archivedAt ? 'Unarchive' : 'Archive'}
               </button>
@@ -280,7 +335,87 @@ export function ProjectView({ projectId }: { projectId: string }) {
             </>
           )}
         </div>
+        <div className="tabs" role="tablist" aria-label="Project sections">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              id={`tab-${t.id}`}
+              aria-selected={tab === t.id}
+              aria-controls={`panel-${t.id}`}
+              tabIndex={tab === t.id ? 0 : -1}
+              className={`tab${tab === t.id ? ' is-on' : ''}`}
+              onClick={() => onTab(t.id)}
+              onKeyDown={(e) => {
+                const i = TABS.findIndex((x) => x.id === tab)
+                const next = e.key === 'ArrowRight' ? TABS[(i + 1) % TABS.length] : e.key === 'ArrowLeft' ? TABS[(i + TABS.length - 1) % TABS.length] : null
+                if (!next) return
+                e.preventDefault()
+                onTab(next.id)
+                requestAnimationFrame(() => document.getElementById(`tab-${next.id}`)?.focus())
+              }}
+              data-testid={`tab-${t.id}`}
+            >
+              {t.label}
+              {t.id === 'tasks' && taskCount > 0 && <span className="count">{taskCount}</span>}
+              {t.id === 'files' && project.fileLocations.length > 0 && <span className="count">{project.fileLocations.length}</span>}
+            </button>
+          ))}
+        </div>
       </header>
+
+      {tab === 'tasks' && (
+        <div role="tabpanel" id="panel-tasks" aria-labelledby="tab-tasks">
+          <TaskBoard projectId={project.id} openTaskId={openTaskId} onOpenTask={onOpenTask} />
+        </div>
+      )}
+      {tab === 'files' && (
+        <div role="tabpanel" id="panel-files" aria-labelledby="tab-files">
+          <FilesTab projectId={project.id} />
+        </div>
+      )}
+      {tab === 'overview' && (
+      <div role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" className="project-panel">
+      <div className="project-grid">
+        <NextTasks project={project} onOpenTask={(id) => nav.openProject(project.id, { tab: 'tasks', taskId: id })} />
+        <section className="card project-card" aria-labelledby="files-sum-h">
+          <div className="card-head">
+            <h2 id="files-sum-h">Files</h2>
+            <button type="button" className="btn btn-small" onClick={() => onTab('files')}>
+              Open Files
+            </button>
+          </div>
+          {project.fileLocations.length === 0 ? (
+            <p className="muted small">No saved file locations. Add folder paths (to copy) and Dropbox web links (to open) on the Files tab.</p>
+          ) : (
+            <ul className="ref-list">
+              {project.fileLocations.slice(0, 4).map((loc) => {
+                const url = loc.kind === 'url' ? safeUrl(loc.value) : null
+                return (
+                  <li key={loc.id} className="ref-row">
+                    <span className="ref-open">
+                      <span className="ref-title">{loc.label || (loc.kind === 'url' ? 'Web link' : 'Local path')}</span>
+                      <span className="ref-meta mono">{loc.value}</span>
+                    </span>
+                    <span className="row-actions always">
+                      <button type="button" className="icon-btn small" aria-label={`Copy ${loc.label || 'location'}`} title="Copy" disabled={!loc.value} onClick={() => void copyText(loc.value, loc.kind === 'url' ? 'Link' : 'Path')}>
+                        <IconCopy size={14} />
+                      </button>
+                      {url && (
+                        <a className="btn btn-small" href={url} target="_blank" rel="noopener noreferrer">
+                          Open
+                        </a>
+                      )}
+                    </span>
+                  </li>
+                )
+              })}
+              {project.fileLocations.length > 4 && <li className="muted small">…and {project.fileLocations.length - 4} more on the Files tab.</li>}
+            </ul>
+          )}
+        </section>
+      </div>
 
       <div className="project-grid">
         <section className="card project-card" aria-labelledby="details-h">
@@ -304,10 +439,17 @@ export function ProjectView({ projectId }: { projectId: string }) {
         <section className="card project-card" aria-labelledby="notes-h">
           <div className="card-head">
             <h2 id="notes-h">Project notes</h2>
-            {!readOnly && (
-              <button type="button" className="btn btn-small" onClick={() => guard(() => nav.openPage(store.createPage({ kind: 'project', projectId: project.id }).id, project.id))}>
-                <IconPlus size={14} /> New note
-              </button>
+            {!readOnly && !project.trashedAt && (
+              <span className="btn-row">
+                <TemplatePicker
+                  kinds={['note']}
+                  label="New from template…"
+                  onPick={(t) => guard(() => nav.openPage(store.createPageFromTemplate(t.id, { kind: 'project', projectId: project.id }).id, project.id))}
+                />
+                <button type="button" className="btn btn-small" onClick={() => guard(() => nav.openPage(store.createPage({ kind: 'project', projectId: project.id }).id, project.id))}>
+                  <IconPlus size={14} /> New note
+                </button>
+              </span>
             )}
           </div>
           {notes.length === 0 ? (
@@ -360,35 +502,6 @@ export function ProjectView({ projectId }: { projectId: string }) {
         )}
       </section>
 
-      <RowList<FileLocation>
-        title="File locations"
-        items={project.fileLocations}
-        readOnly={readOnly}
-        empty="No saved locations. Add a project folder path (to copy) or a Dropbox web link (to open)."
-        addLabel="Add location"
-        make={() => ({ id: newId(), label: '', kind: 'path', value: '', description: '' })}
-        onChange={(fileLocations) => set({ fileLocations })}
-        columns={[
-          { key: 'label', label: 'Location name', width: '160px' },
-          { key: 'kind', label: 'Location type' },
-          { key: 'value', label: 'Path or link', placeholder: 'C:\\Jobs\\… or https://www.dropbox.com/…', width: '320px' },
-        ]}
-        extra={(loc) => {
-          const url = loc.kind === 'url' ? safeUrl(loc.value) : null
-          return (
-            <span className="row-actions always">
-              <button type="button" className="icon-btn small" aria-label={`Copy ${loc.label || 'location'}`} title="Copy" disabled={!loc.value} onClick={() => void copyText(loc.value, loc.kind === 'url' ? 'Link' : 'Path')}>
-                <IconCopy size={14} />
-              </button>
-              {url && (
-                <a className="icon-btn small" href={url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${loc.label || 'link'}`} title="Open link in a new tab (needs a connection)">
-                  <IconExternal size={14} />
-                </a>
-              )}
-            </span>
-          )
-        }}
-      />
       <div className="project-grid">
         <RowList<Contact>
           title="Contacts"
@@ -432,6 +545,8 @@ export function ProjectView({ projectId }: { projectId: string }) {
           ]}
         />
       </div>
+      </div>
+      )}
     </div>
   )
 }

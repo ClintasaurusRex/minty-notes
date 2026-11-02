@@ -7,7 +7,7 @@ import { ReadOnlyError } from '../store/workspaceStore'
 import { shortDateTime } from './format'
 import { IconChevron, IconPencil, IconPin, IconPlus, IconRestore, IconTag, IconTrash } from './icons'
 import { LabelPicker } from './LabelPicker'
-import type { NavSection } from './nav'
+import { useNav, type NavSection, type OpenProjectOptions } from './nav'
 import { notify } from './notices'
 import { STATUS_LABELS } from './projectFormat'
 
@@ -16,7 +16,7 @@ interface Props {
   pageId: string | null
   projectId: string | null
   onOpenPage: (id: string, projectId?: string | null) => void
-  onOpenProject: (id: string | null) => void
+  onOpenProject: (id: string | null, options?: OpenProjectOptions) => void
   onQuickNote: () => void
 }
 
@@ -94,8 +94,12 @@ function ProjectsNav({ projectId, pageId, onOpenPage, onOpenProject }: Pick<Prop
   const [filter, setFilter] = useState<'open' | 'archived'>('open')
   const [query, setQuery] = useState('')
   const project = projectId ? data.projects[projectId] : undefined
+  const nav = useNav()
 
   if (project) {
+    const tasks = Object.values(data.tasks).filter((t) => t.projectId === project.id)
+    const doneTasks = tasks.filter((t) => t.status === 'done').length
+    const openTasks = tasks.length - doneTasks
     const notes = projectNotes(project.id, data.pages)
     const refs = projectReferences(project, data)
     return (
@@ -107,12 +111,23 @@ function ProjectsNav({ projectId, pageId, onOpenPage, onOpenProject }: Pick<Prop
           <h2 className="project-nav-title">{project.name || 'Untitled project'}</h2>
         </div>
         <ul className="nav-list">
-          <li>
-            <button type="button" className={`nav-page${!pageId ? ' is-active' : ''}`} aria-current={!pageId ? 'page' : undefined} onClick={() => onOpenProject(project.id)}>
-              <span className="nav-page-title">Overview</span>
-              <span className="nav-page-meta">{STATUS_LABELS[project.status]}{project.archivedAt ? ' · archived' : ''}{project.trashedAt ? ' · in Trash' : ''}</span>
-            </button>
-          </li>
+          {(
+            [
+              ['overview', 'Overview', `${STATUS_LABELS[project.status]}${project.archivedAt ? ' · archived' : ''}${project.trashedAt ? ' · in Trash' : ''}`],
+              ['tasks', 'Tasks', `${openTasks} open · ${doneTasks} done`],
+              ['files', 'Files', `${project.fileLocations.length} location${project.fileLocations.length === 1 ? '' : 's'}`],
+            ] as const
+          ).map(([tab, label, meta]) => {
+            const active = !pageId && nav.projectTab === tab
+            return (
+              <li key={tab}>
+                <button type="button" className={`nav-page${active ? ' is-active' : ''}`} aria-current={active ? 'page' : undefined} onClick={() => onOpenProject(project.id, { tab })} data-testid={`project-nav-${tab}`}>
+                  <span className="nav-page-title">{label}</span>
+                  <span className="nav-page-meta">{meta}</span>
+                </button>
+              </li>
+            )
+          })}
         </ul>
         <div className="nav-subhead">
           <span>Notes</span>
@@ -202,6 +217,7 @@ function ProjectsNav({ projectId, pageId, onOpenPage, onOpenProject }: Pick<Prop
 export function Navigator({ section, pageId, projectId, onOpenPage, onOpenProject, onQuickNote }: Props) {
   const { store } = useServices()
   const projects = useWorkspace((s) => s.data.projects)
+  const tasks = useWorkspace((s) => s.data.tasks)
   const categories = useWorkspace((s) => s.data.categories)
   const [editingCategories, setEditingCategories] = useState<{ kind: 'notebooks' | 'sections'; id: string } | null>(null)
   const pages = useWorkspace((s) => s.data.pages)
@@ -279,11 +295,12 @@ export function Navigator({ section, pageId, projectId, onOpenPage, onOpenProjec
             <ul className="nav-list" aria-label="Trashed projects">
               {trashedProjects.map((p) => {
                 const owned = all.filter((pg) => pg.location.kind === 'project' && pg.location.projectId === p.id).length
+                const taskCount = Object.values(tasks).filter((t) => t.projectId === p.id).length
                 return (
                   <li key={p.id} className="trash-item">
                     <span className="nav-page-title">{p.name || 'Untitled project'}</span>
                     <span className="nav-page-meta">
-                      Project · {owned} note{owned === 1 ? '' : 's'} · trashed {shortDateTime(p.trashedAt)}
+                      Project · {owned} note{owned === 1 ? '' : 's'} · {taskCount} task{taskCount === 1 ? '' : 's'} · trashed {shortDateTime(p.trashedAt)}
                     </span>
                     {!readOnly && (
                       <span className="row-actions always">
@@ -294,7 +311,7 @@ export function Navigator({ section, pageId, projectId, onOpenPage, onOpenProjec
                           type="button"
                           className="btn btn-small btn-danger"
                           onClick={() => {
-                            const msg = `Delete the project “${p.name}” forever? Its details and links are removed.${owned ? ` Its ${owned} note${owned === 1 ? '' : 's'} will stay in the Trash (restorable to the Inbox).` : ''} Shared reference pages are not affected.`
+                            const msg = `Delete the project “${p.name}” forever? Its details and links are removed.${taskCount ? ` Its ${taskCount} task${taskCount === 1 ? ' is' : 's are'} deleted with it.` : ''}${owned ? ` Its ${owned} note${owned === 1 ? '' : 's'} will stay in the Trash (restorable to the Inbox).` : ''} Shared reference pages are not affected.`
                             if (window.confirm(msg)) guard(() => void store.deleteProjectForever(p.id))
                           }}
                         >
@@ -328,7 +345,8 @@ export function Navigator({ section, pageId, projectId, onOpenPage, onOpenProjec
                       type="button"
                       className="btn btn-small btn-danger"
                       onClick={() => {
-                        if (window.confirm(`Delete “${p.title}” forever? Its text and layout will be removed from this workspace.`)) {
+                        const taskLinks = Object.values(tasks).filter((t) => t.linkedPageIds.includes(p.id)).length
+                        if (window.confirm(`Delete “${p.title}” forever? Its text and layout will be removed from this workspace.${taskLinks ? ` It is also unlinked from ${taskLinks} task${taskLinks === 1 ? '' : 's'} (the tasks stay).` : ''}`)) {
                           store.deletePageForever(p.id).catch((err: unknown) => notify('error', String(err)))
                         }
                       }}

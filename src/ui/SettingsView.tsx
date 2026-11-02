@@ -7,6 +7,7 @@ import { IconDownload, IconFolder, IconRestore } from './icons'
 import { notify } from './notices'
 import { RestoreDialog } from './RestoreDialog'
 import { ReadOnlyError } from '../store/workspaceStore'
+import { TemplatesCard } from './Templates'
 
 const STARTER_CATEGORIES = ['VTScada', 'Studio 5000', 'Weidmüller', 'Custom tools', 'Panel building']
 
@@ -257,6 +258,8 @@ export function SettingsView() {
       </section>
 
       <LabelsCard />
+
+      <TemplatesCard />
 
       <section className="card" aria-labelledby="storage-h">
         <h2 id="storage-h">Storage on this computer</h2>

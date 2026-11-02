@@ -109,6 +109,13 @@ export function RestoreDialog({ source, load, onClose }: { source: string; load:
             <dd>
               {step.result.summary.counts.attachments} ({formatBytes(step.result.summary.attachmentBytes)})
             </dd>
+            <dt>Tasks</dt>
+            <dd data-testid="restore-tasks">
+              {step.result.summary.counts.tasks}
+              {step.result.summary.doneTasks > 0 && ` (${step.result.summary.doneTasks} done)`}
+            </dd>
+            <dt>Templates</dt>
+            <dd data-testid="restore-templates">{step.result.summary.counts.templates}</dd>
             <dt>Made with</dt>
             <dd>
               Minty Notes {step.result.summary.appVersion} (format {step.result.summary.formatVersion})
@@ -132,6 +139,7 @@ export function RestoreDialog({ source, load, onClose }: { source: string; load:
       {step.kind === 'done' && (
         <p role="status" className="ok-text">
           Restored {step.result.summary.counts.projects} projects, {step.result.summary.counts.pages} pages, and {step.result.summary.counts.attachments} images.
+          {step.result.summary.counts.tasks > 0 && ` Also ${step.result.summary.counts.tasks} tasks and ${step.result.summary.counts.templates} templates.`}
         </p>
       )}
 

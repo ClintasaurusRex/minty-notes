@@ -5,14 +5,15 @@ import { ReadOnlyError } from '../store/workspaceStore'
 import { PageView } from './canvas/PageView'
 import { relativeTime } from './format'
 import { HomeView } from './HomeView'
-import { IconAlert, IconCheck, IconHome, IconInbox, IconLeaf, IconNote, IconNotebook, IconPanel, IconProject, IconQuick, IconSearch, IconSettings, IconTrash } from './icons'
-import { NavContext, type Nav, type NavSection } from './nav'
+import { IconAlert, IconCheck, IconHome, IconInbox, IconLeaf, IconNote, IconNotebook, IconPanel, IconProject, IconQuick, IconSearch, IconSettings, IconTasks, IconTrash } from './icons'
+import { NavContext, type Nav, type NavSection, type OpenProjectOptions, type ProjectTab } from './nav'
 import { Navigator } from './Navigator'
 import { dismissNotice, noticeStore, notify } from './notices'
 import { ProjectView } from './ProjectView'
 import { recordRecent } from './recent'
 import { SearchView } from './SearchView'
 import { SettingsView } from './SettingsView'
+import { TasksView } from './TasksView'
 
 function readPref(key: string): string | null {
   try {
@@ -40,13 +41,14 @@ const RAIL: { id: NavSection; label: string; Icon: typeof IconInbox }[] = [
   { id: 'projects', label: 'Projects', Icon: IconProject },
   { id: 'notebooks', label: 'Notebooks', Icon: IconNotebook },
   { id: 'notes', label: 'Notes', Icon: IconNote },
+  { id: 'tasks', label: 'Tasks', Icon: IconTasks },
   { id: 'search', label: 'Search', Icon: IconSearch },
   { id: 'trash', label: 'Trash', Icon: IconTrash },
 ]
 
 /** Sections that show the page list beside the main area. */
 const LIST_SECTIONS: NavSection[] = ['inbox', 'projects', 'notebooks', 'notes', 'trash']
-const SECTIONS: NavSection[] = ['home', 'inbox', 'projects', 'notebooks', 'notes', 'search', 'trash', 'settings']
+const SECTIONS: NavSection[] = ['home', 'inbox', 'projects', 'notebooks', 'notes', 'tasks', 'search', 'trash', 'settings']
 
 /** The list a page naturally belongs to. */
 function homeSection(kind: string): NavSection {
@@ -251,6 +253,7 @@ export function App() {
   const loadError = useWorkspace((s) => s.loadError)
   const pages = useWorkspace((s) => s.data.pages)
   const projects = useWorkspace((s) => s.data.projects)
+  const data = useWorkspace((s) => s.data)
   const epoch = useWorkspace((s) => s.epoch)
   const [section, setSection] = useState<NavSection>(() => {
     const saved = readPref('section') as NavSection | null
@@ -259,6 +262,15 @@ export function App() {
   const [pageId, setPageId] = useState<string | null>(() => readPref('page'))
   const [projectId, setProjectId] = useState<string | null>(() => readPref('project'))
   const [navOpen, setNavOpen] = useState(() => !isNarrow())
+  const [projectTab, setProjectTab] = useState<ProjectTab>(() => {
+    const saved = readPref('project-tab')
+    return saved === 'tasks' || saved === 'files' ? saved : 'overview'
+  })
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null)
+  const setTab = (tab: ProjectTab) => {
+    setProjectTab(tab)
+    writePref('project-tab', tab)
+  }
 
   const setPage = (id: string | null) => {
     setPageId(id)
@@ -289,8 +301,12 @@ export function App() {
     recordRecent(id, inProject ?? null)
     if (isNarrow()) setNavOpen(false)
   }
-  const openProject = (id: string | null) => {
+  const openProject = (id: string | null, options: OpenProjectOptions = {}) => {
     setSec('projects')
+    // A different project opens on its overview unless a tab is asked for.
+    if (options.tab) setTab(options.tab)
+    else if (id !== projectId) setTab('overview')
+    setOpenTaskId(options.taskId ?? null)
     setProject(id)
     setPage(null)
     if (isNarrow() && id) setNavOpen(false)
@@ -340,14 +356,19 @@ export function App() {
   const pageProject = section === 'projects' && project ? project.id : null
   const showPage = LIST_SECTIONS.includes(section) && section !== 'trash' && page && !page.trashedAt && (section !== 'projects' || !!pageProject)
   const listVisible = navOpen && LIST_SECTIONS.includes(section)
-  const nav: Nav = { section, pageId, projectId: project?.id ?? null, go, openPage, openProject, quickNote }
+  const nav: Nav = { section, pageId, projectId: project?.id ?? null, projectTab, go, openPage, openProject, quickNote }
 
   let main
   if (section === 'settings') main = <SettingsView />
   else if (section === 'home') main = <HomeView />
   else if (section === 'search') main = <SearchView />
+  else if (section === 'tasks') main = <TasksView />
   else if (showPage) main = <PageView key={`${epoch}:${pageId}`} pageId={pageId!} projectId={pageProject} onLeave={() => (pageProject ? openProject(pageProject) : setPage(null))} />
-  else if (section === 'projects' && project) main = <ProjectView projectId={project.id} />
+  else if (section === 'projects' && project)
+    main = <ProjectView key={project.id} projectId={project.id} tab={projectTab} onTab={setTab} openTaskId={openTaskId && data.tasks[openTaskId]?.projectId === project.id ? openTaskId : null} onOpenTask={(id) => {
+      setOpenTaskId(id)
+      if (id) setTab('tasks')
+    }} />
   else if (section === 'projects')
     main = (
       <div className="empty-main">

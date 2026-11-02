@@ -1,5 +1,7 @@
 import { useServices, useWorkspace } from '../../app/context'
 import { inheritedCategoryIds, isLinkedTo, linkedProjects } from '../../domain/references'
+import { STATUS_LABELS, tasksLinkingPage } from '../../domain/tasks'
+import { saveAsTemplate } from '../actions'
 import type { Page, PageLocation } from '../../domain/types'
 import { ReadOnlyError } from '../../store/workspaceStore'
 import { shortDateTime } from '../format'
@@ -96,6 +98,26 @@ function ShareBanner({ page, projectId }: { page: Page; projectId: string | null
   )
 }
 
+/** Tasks that link to this page (the link is by ID; the page is not copied into them). */
+function TaskBacklinks({ page }: { page: Page }) {
+  const nav = useNav()
+  const tasks = useWorkspace((s) => s.data.tasks)
+  const projects = useWorkspace((s) => s.data.projects)
+  const linked = tasksLinkingPage(Object.values(tasks), page.id, projects)
+  if (linked.length === 0) return null
+  return (
+    <div className="task-backlinks" data-testid="task-backlinks">
+      <span className="muted small">Linked from task{linked.length === 1 ? '' : 's'}:</span>
+      {linked.map((t) => (
+        <button key={t.id} type="button" className="chip chip-task" onClick={() => nav.openProject(t.projectId, { tab: 'tasks', taskId: t.id })} title={`${STATUS_LABELS[t.status]} · ${projects[t.projectId]?.name ?? ''}`}>
+          {t.status === 'done' ? '✓ ' : ''}
+          {t.title} <span className="muted">· {projects[t.projectId]?.name}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Props) {
   const { store } = useServices()
   const readOnly = useWorkspace((s) => s.readOnly)
@@ -144,6 +166,7 @@ export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Pr
           <LabelPicker kind="tag" label="Add tag to this page" selected={page.tagIds} onChange={(ids) => guard(() => store.setPageTags(page.id, ids))} />
         </div>
         <ShareBanner page={page} projectId={projectId} />
+        <TaskBacklinks page={page} />
       </div>
       <div className="page-header-actions">
         <div className="tool-group" role="group" aria-label="Zoom">
@@ -186,6 +209,9 @@ export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Pr
                 )}
               </select>
             </label>
+            <button type="button" className="btn btn-ghost" title="Save this page as a reusable note template" onClick={() => void saveAsTemplate('note', page.title, (name) => store.createTemplateFromPage(page.id, name))}>
+              Save as template
+            </button>
             <button
               type="button"
               className="btn btn-ghost"
