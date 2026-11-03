@@ -6,8 +6,11 @@ import { docFromHtml, docFromPlainText, emptyDoc, isDocEmpty } from '../../domai
 import { newId, nowIso, type AttachmentMeta, type CanvasObject, type ImageObject, type Page, type RichTextDoc, type TextObject } from '../../domain/types'
 import { describeStorageError } from '../../storage/repository'
 import { ReadOnlyError } from '../../store/workspaceStore'
+import { useNav } from '../nav'
 import { notify } from '../notices'
 import { CanvasContext, type CanvasApi } from './CanvasContext'
+import { PageLinkPicker } from './PageLinkPicker'
+import { pageLinkStatusKey } from './pageLinkUi'
 import { DEFAULT_TEXT_WIDTH, NEW_TEXT_HEIGHT, imageFilesFrom, minZ, nextZ, placeNew, prepareImage } from './canvasActions'
 import { ImageBox } from './ImageBox'
 import { PageHeader } from './PageHeader'
@@ -18,8 +21,29 @@ function isTypingTarget(el: EventTarget | null): boolean {
   return el instanceof HTMLElement && !!el.closest('input, textarea, select, [contenteditable="true"]')
 }
 
+/** Re-draws page-link states (title, Trash, deleted) in open editors whenever pages change. */
+function PageLinkRefresher({ editors }: { editors: Record<string, Editor> }) {
+  const pages = useWorkspace((s) => s.data.pages)
+  useEffect(() => {
+    for (const editor of Object.values(editors)) {
+      if (editor.isDestroyed || !pageLinkStatusKey.getState(editor.state)?.hasLinks) continue
+      editor.view.dispatch(editor.state.tr.setMeta(pageLinkStatusKey, true).setMeta('addToHistory', false))
+    }
+  }, [pages, editors])
+  return null
+}
+
+interface LinkRequest {
+  editorId: string
+  from: number
+  to: number
+  restore: string
+  query: string
+}
+
 export function PageView({ pageId, projectId = null, onLeave }: { pageId: string; projectId?: string | null; onLeave: () => void }) {
   const { store } = useServices()
+  const nav = useNav()
   const page = useWorkspace((s) => s.data.pages[pageId])
   const objects = useWorkspace((s) => s.data.objects[pageId])
   const readOnly = useWorkspace((s) => s.readOnly)
@@ -33,6 +57,7 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null)
   const [pageEl, setPageEl] = useState<HTMLDivElement | null>(null)
   const [availableWidth, setAvailableWidth] = useState(0)
+  const [linkRequest, setLinkRequest] = useState<LinkRequest | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   /** Text boxes created in this view; removed again if left empty. */
   const freshIds = useRef(new Set<string>())
@@ -251,6 +276,28 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
     duplicate,
     remove,
     focusPage,
+    requestPageLink: (editorId, range, restore) => {
+      const editor = editors[editorId]
+      if (readOnly || !editor) return
+      setLinkRequest({ editorId, ...range, restore, query: range.from === range.to ? '' : editor.state.doc.textBetween(range.from, range.to, ' ').slice(0, 80) })
+    },
+    followPageLink: (id) => nav.followPageLink(id),
+  }
+
+  const closeLinkPicker = (pageToLink: Page | null) => {
+    const req = linkRequest
+    setLinkRequest(null)
+    const editor = req ? editors[req.editorId] : undefined
+    if (!req || !editor || editor.isDestroyed) return
+    const chain = editor.chain().focus()
+    if (!pageToLink) {
+      if (req.restore) chain.insertContentAt(req.from, req.restore).run()
+      else chain.setTextSelection({ from: req.from, to: req.to }).run()
+      return
+    }
+    const mark = { type: 'pageLink', attrs: { pageId: pageToLink.id } }
+    if (req.from !== req.to) chain.setTextSelection({ from: req.from, to: req.to }).setMark('pageLink', mark.attrs).setTextSelection(req.to).run()
+    else chain.insertContentAt(req.from, { type: 'text', text: pageToLink.title || 'Untitled page', marks: [mark] }).run()
   }
 
   const onBackgroundPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -294,6 +341,8 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
     <CanvasContext.Provider value={api}>
       <div className="page-view">
         <PageHeader page={page as Page} projectId={projectId} onLeave={onLeave} zoom={zoom} scale={scale} onZoom={setZoom} />
+        <PageLinkRefresher editors={editors} />
+        {linkRequest && <PageLinkPicker currentPageId={pageId} initialQuery={linkRequest.query} onChoose={(p) => closeLinkPicker(p)} onCancel={() => closeLinkPicker(null)} />}
         <Toolbar
           readOnly={readOnly}
           canUndo={canUndo || !!focusedEditor()}
@@ -310,6 +359,12 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
           onBack={() => zOrder(false)}
           onDuplicate={() => selected && duplicate(selected.id)}
           onDelete={() => selected && remove(selected.id)}
+          onPageLink={() => {
+            if (!activeEditor || !selected) return
+            const { from, to } = activeEditor.state.selection
+            api.requestPageLink(selected.id, { from, to }, '')
+          }}
+          onFollowLink={(id) => nav.followPageLink(id)}
         />
         <input
           ref={fileInput}

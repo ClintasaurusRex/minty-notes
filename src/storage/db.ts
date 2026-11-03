@@ -11,8 +11,12 @@ export const DB_NAME = 'minty-notes'
  *    notebooks and sections gain categoryIds (see migrateToV3).
  * 4: `tasks` (byProject index) and `templates` stores; project file locations
  *    gain `description` (see migrateToV4).
+ * 5: data format 4 (Stage 4: tables, page links, image markup, sketches,
+ *    imported documents). No new stores and no record rewrites — the new
+ *    fields are optional — but the version bump stops an older cached app
+ *    (DB version 4) from opening, and editing, content it cannot represent.
  */
-export const DB_VERSION = 4
+export const DB_VERSION = 5
 
 export interface MintyDB extends DBSchema {
   projects: { key: string; value: Project }
@@ -132,6 +136,16 @@ export async function migrateToV4(tx: UpgradeTx): Promise<void> {
   if (workspace && (workspace.formatVersion ?? 1) < FORMAT_VERSION) await settings.put({ ...workspace, formatVersion: FORMAT_VERSION }, 'workspace')
 }
 
+/**
+ * Version 4 → 5, inside the upgrade transaction: mark the workspace as data
+ * format 4. Every record stays exactly as it was (format-4 fields are optional).
+ */
+export async function migrateToV5(tx: UpgradeTx): Promise<void> {
+  const settings = tx.objectStore('settings')
+  const workspace = (await settings.get('workspace')) as { formatVersion?: number } | undefined
+  if (workspace && (workspace.formatVersion ?? 1) < FORMAT_VERSION) await settings.put({ ...workspace, formatVersion: FORMAT_VERSION }, 'workspace')
+}
+
 export function openMintyDB(name = DB_NAME, options: OpenOptions = {}): Promise<MintyDatabase> {
   return openDB<MintyDB>(name, DB_VERSION, {
     upgrade(db, oldVersion, _newVersion, transaction) {
@@ -145,6 +159,7 @@ export function openMintyDB(name = DB_NAME, options: OpenOptions = {}): Promise<
           if (oldVersion < 2) await migrateToV2(transaction)
           if (oldVersion < 3) await migrateToV3(transaction)
           if (oldVersion < 4) await migrateToV4(transaction)
+          if (oldVersion < 5) await migrateToV5(transaction)
         })().catch(() => transaction.abort())
         // The open request reports the failure; don't also leave an unhandled rejection.
         transaction.done.catch(() => undefined)

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useServices, useWorkspace } from '../../app/context'
 import { inheritedCategoryIds, isLinkedTo, linkedProjects } from '../../domain/references'
 import { STATUS_LABELS, tasksLinkingPage } from '../../domain/tasks'
@@ -118,8 +119,45 @@ function TaskBacklinks({ page }: { page: Page }) {
   )
 }
 
+/**
+ * Notes whose text links to this page (internal page links). Read once when the
+ * page opens: it scans every stored note, so it is not refreshed on every save.
+ */
+function usePageBacklinks(pageId: string): Page[] {
+  const { store } = useServices()
+  const [found, setFound] = useState<{ pageId: string; pages: Page[] } | null>(null)
+  useEffect(() => {
+    let alive = true
+    store
+      .pagesLinkingTo(pageId)
+      .then((pages) => alive && setFound({ pageId, pages }))
+      .catch(() => alive && setFound({ pageId, pages: [] }))
+    return () => {
+      alive = false
+    }
+  }, [store, pageId])
+  return found?.pageId === pageId ? found.pages : []
+}
+
+function PageBacklinks({ pages }: { pages: Page[] }) {
+  const nav = useNav()
+  if (pages.length === 0) return null
+  return (
+    <div className="task-backlinks" data-testid="page-backlinks">
+      <span className="muted small">Linked from note{pages.length === 1 ? '' : 's'}:</span>
+      {pages.map((p) => (
+        <button key={p.id} type="button" className="chip" onClick={() => nav.openPage(p.id)}>
+          <IconLink size={12} /> {p.title || 'Untitled'}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Props) {
   const { store } = useServices()
+  const nav = useNav()
+  const backlinks = usePageBacklinks(page.id)
   const readOnly = useWorkspace((s) => s.readOnly)
   const data = useWorkspace((s) => s.data)
   const options = useLocationOptions(page.location)
@@ -140,6 +178,11 @@ export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Pr
   return (
     <header className="page-header">
       <div className="page-header-main">
+        {nav.back && nav.back.pageId !== page.id && (
+          <button type="button" className="btn btn-small btn-ghost back-link" onClick={nav.goBack} data-testid="link-back">
+            ← Back to “{nav.back.title || 'Untitled'}”
+          </button>
+        )}
         <div className="crumbs" aria-label="Location">
           {context && page.location.kind !== 'project' ? `${context.name} › References · from ${locationLabel(page.location, data)}` : locationLabel(page.location, data)}
           <span className="muted"> · created {shortDateTime(page.createdAt)}</span>
@@ -167,6 +210,7 @@ export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Pr
         </div>
         <ShareBanner page={page} projectId={projectId} />
         <TaskBacklinks page={page} />
+        <PageBacklinks pages={backlinks} />
       </div>
       <div className="page-header-actions">
         <div className="tool-group" role="group" aria-label="Zoom">
@@ -219,7 +263,11 @@ export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Pr
                 guard(() => {
                   store.trashPage(page.id)
                   const links = linkedProjects(page, data).length
-                  notify('info', `“${page.title}” moved to Trash${links ? `. It is no longer shown in the ${links} project${links === 1 ? '' : 's'} that link it until restored.` : ''}`)
+                  const notes = backlinks.length
+                  notify(
+                    'info',
+                    `“${page.title}” moved to Trash${links ? `. It is no longer shown in the ${links} project${links === 1 ? '' : 's'} that link it until restored.` : ''}${notes ? ` ${notes} note${notes === 1 ? ' links' : 's link'} to it; ${notes === 1 ? 'that link shows' : 'those links show'} “in Trash” until it is restored.` : ''}`,
+                  )
                   onLeave()
                 })
               }

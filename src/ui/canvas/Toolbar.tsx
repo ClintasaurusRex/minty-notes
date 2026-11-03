@@ -1,8 +1,11 @@
 import { useEditorState, type Editor } from '@tiptap/react'
 import { useState, type ReactNode } from 'react'
 import { MIN_IMAGE_SIZE, MIN_TEXT_WIDTH, clampRect } from '../../domain/geometry'
+import { pageLinkState } from '../../domain/pageLink'
 import type { CanvasObject } from '../../domain/types'
-import { IconBack, IconDuplicate, IconFront, IconImage, IconRedo, IconText, IconTrash, IconUndo } from '../icons'
+import { useWorkspace } from '../../app/context'
+import { IconBack, IconDuplicate, IconFront, IconImage, IconLink, IconRedo, IconText, IconTrash, IconUndo } from '../icons'
+import { pageLinkAt, pageLinkRange } from './pageLinkUi'
 
 interface Props {
   readOnly: boolean
@@ -20,6 +23,9 @@ interface Props {
   onBack: () => void
   onDuplicate: () => void
   onDelete: () => void
+  /** Open the page picker for the current text selection. */
+  onPageLink: () => void
+  onFollowLink: (pageId: string) => void
 }
 
 /** Toolbar buttons keep focus in the text being edited (mousedown is cancelled). */
@@ -68,7 +74,7 @@ function NumberField({ label, value, disabled, onCommit }: { label: string; valu
   )
 }
 
-function FormatTools({ editor, disabled }: { editor: Editor | null; disabled: boolean }) {
+function FormatTools({ editor, disabled, onPageLink }: { editor: Editor | null; disabled: boolean; onPageLink: () => void }) {
   const s = useEditorState({
     editor,
     selector: ({ editor: e }) =>
@@ -79,12 +85,15 @@ function FormatTools({ editor, disabled }: { editor: Editor | null; disabled: bo
             underline: e.isActive('underline'),
             strike: e.isActive('strike'),
             code: e.isActive('code'),
+            codeBlock: e.isActive('codeBlock'),
             h1: e.isActive('heading', { level: 1 }),
             h2: e.isActive('heading', { level: 2 }),
             h3: e.isActive('heading', { level: 3 }),
             bullet: e.isActive('bulletList'),
             ordered: e.isActive('orderedList'),
             quote: e.isActive('blockquote'),
+            table: e.isActive('table'),
+            pageLink: !!pageLinkAt(e.state),
           }
         : null,
   })
@@ -116,8 +125,11 @@ function FormatTools({ editor, disabled }: { editor: Editor | null; disabled: bo
       <ToolButton label="Strikethrough" active={s?.strike} disabled={off} onClick={run((e) => e.chain().focus().toggleStrike().run())}>
         <s>S</s>
       </ToolButton>
-      <ToolButton label="Inline code" active={s?.code} disabled={off} onClick={run((e) => e.chain().focus().toggleCode().run())}>
+      <ToolButton label="Inline code (Ctrl+E)" active={s?.code} disabled={off} onClick={run((e) => e.chain().focus().toggleCode().run())}>
         <code>{'<>'}</code>
+      </ToolButton>
+      <ToolButton label="Code block (Ctrl+Alt+C)" active={s?.codeBlock} disabled={off} onClick={run((e) => e.chain().focus().toggleCodeBlock().run())}>
+        <code>{'{ }'}</code>
       </ToolButton>
       <span className="tool-sep" />
       <ToolButton label="Bulleted list" active={s?.bullet} disabled={off} onClick={run((e) => e.chain().focus().toggleBulletList().run())}>
@@ -129,9 +141,100 @@ function FormatTools({ editor, disabled }: { editor: Editor | null; disabled: bo
       <ToolButton label="Quote" active={s?.quote} disabled={off} onClick={run((e) => e.chain().focus().toggleBlockquote().run())}>
         ❝
       </ToolButton>
+      <ToolButton
+        label="Insert table (3 × 3 with a header row)"
+        active={s?.table}
+        disabled={off || !!s?.table}
+        onClick={run((e) => e.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())}
+      >
+        ⊞
+      </ToolButton>
+      <ToolButton label="Link to a page (Ctrl+Shift+K, or type [[)" active={s?.pageLink} disabled={off} onClick={onPageLink}>
+        <IconLink size={15} />
+      </ToolButton>
       <ToolButton label="Clear formatting" disabled={off} onClick={run((e) => e.chain().focus().unsetAllMarks().clearNodes().run())}>
         T̸
       </ToolButton>
+    </div>
+  )
+}
+
+/** Row and column controls, shown while the cursor is in a table. */
+function TableTools({ editor }: { editor: Editor }) {
+  const s = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      inTable: e.isActive('table'),
+      canDeleteRow: e.can().deleteRow(),
+      canDeleteCol: e.can().deleteColumn(),
+      canMerge: e.can().mergeCells(),
+      canSplit: e.can().splitCell(),
+    }),
+  })
+  if (!s.inTable) return null
+  const run = (fn: (e: Editor) => void) => () => fn(editor)
+  return (
+    <div className="tool-group table-tools" role="group" aria-label="Table rows and columns">
+      <span className="tool-label">Table</span>
+      <ToolButton label="Add row above" onClick={run((e) => e.chain().focus().addRowBefore().run())} wide>
+        +Row ↑
+      </ToolButton>
+      <ToolButton label="Add row below" onClick={run((e) => e.chain().focus().addRowAfter().run())} wide>
+        +Row ↓
+      </ToolButton>
+      <ToolButton label="Add column to the left" onClick={run((e) => e.chain().focus().addColumnBefore().run())} wide>
+        +Col ←
+      </ToolButton>
+      <ToolButton label="Add column to the right" onClick={run((e) => e.chain().focus().addColumnAfter().run())} wide>
+        +Col →
+      </ToolButton>
+      <ToolButton label="Delete row" disabled={!s.canDeleteRow} onClick={run((e) => e.chain().focus().deleteRow().run())} wide>
+        −Row
+      </ToolButton>
+      <ToolButton label="Delete column" disabled={!s.canDeleteCol} onClick={run((e) => e.chain().focus().deleteColumn().run())} wide>
+        −Col
+      </ToolButton>
+      <ToolButton label="Toggle header row" onClick={run((e) => e.chain().focus().toggleHeaderRow().run())} wide>
+        Header
+      </ToolButton>
+      {(s.canMerge || s.canSplit) && (
+        <ToolButton label={s.canMerge ? 'Merge selected cells' : 'Split cell'} onClick={run((e) => (s.canMerge ? e.chain().focus().mergeCells().run() : e.chain().focus().splitCell().run()))} wide>
+          {s.canMerge ? 'Merge' : 'Split'}
+        </ToolButton>
+      )}
+      <ToolButton label="Delete table" onClick={run((e) => e.chain().focus().deleteTable().run())} wide>
+        −Table
+      </ToolButton>
+    </div>
+  )
+}
+
+/** Open or remove the page link at the cursor. */
+function LinkTools({ editor, readOnly, onFollow }: { editor: Editor; readOnly: boolean; onFollow: (pageId: string) => void }) {
+  const pageId = useEditorState({ editor, selector: ({ editor: e }) => pageLinkAt(e.state) })
+  const pages = useWorkspace((st) => st.data.pages)
+  if (!pageId) return null
+  const { state, title } = pageLinkState(pageId, pages)
+  const name = state === 'missing' ? 'deleted page' : `“${title}”${state === 'trashed' ? ' (in Trash)' : ''}`
+  return (
+    <div className="tool-group link-tools" role="group" aria-label="Page link">
+      <ToolButton label={`Open linked page ${name} (Alt+Enter)`} onClick={() => onFollow(pageId)} wide>
+        <IconLink size={14} /> <span className="link-tools-name">Open {name}</span>
+      </ToolButton>
+      {!readOnly && (
+        <ToolButton
+          label="Remove page link (keeps the text)"
+          onClick={() => {
+            const range = pageLinkRange(editor.state)
+            const chain = editor.chain().focus()
+            if (range) chain.setTextSelection(range)
+            chain.unsetMark('pageLink').run()
+          }}
+          wide
+        >
+          Unlink
+        </ToolButton>
+      )}
     </div>
   )
 }
@@ -145,7 +248,18 @@ export function Toolbar(props: Props) {
     props.onArrange(isText ? { x: r.x, y: r.y, w: r.w } : r)
   }
   return (
-    <div className="toolbar" role="toolbar" aria-label="Page tools">
+    <div
+      className="toolbar"
+      role="toolbar"
+      aria-label="Page tools"
+      onKeyDown={(e) => {
+        // Esc returns from the toolbar to the text being edited (see Alt+F10).
+        if (e.key === 'Escape' && isText && props.editor) {
+          e.preventDefault()
+          props.editor.commands.focus()
+        }
+      }}
+    >
       <div className="tool-group">
         <ToolButton label="Undo (Ctrl+Z)" disabled={readOnly || !props.canUndo} onClick={props.onUndo}>
           <IconUndo />
@@ -162,23 +276,33 @@ export function Toolbar(props: Props) {
           <IconImage /> <span>Image</span>
         </ToolButton>
       </div>
-      <FormatTools editor={isText ? props.editor : null} disabled={readOnly} />
-      {selected && !readOnly && (
-        <div className="tool-group arrange" role="group" aria-label="Arrange selected object">
-          <NumberField key={`x-${selected.id}`} label="X" value={selected.x} onCommit={arrange('x')} />
-          <NumberField key={`y-${selected.id}`} label="Y" value={selected.y} onCommit={arrange('y')} />
-          <NumberField key={`w-${selected.id}`} label="W" value={selected.w} onCommit={arrange('w')} />
-          <NumberField key={`h-${selected.id}`} label="H" value={selected.h} disabled={isText} onCommit={arrange('h')} />
-          <ToolButton label="Bring to front" onClick={props.onFront}>
+      <FormatTools editor={isText ? props.editor : null} disabled={readOnly} onPageLink={props.onPageLink} />
+      {isText && props.editor && (
+        // Floats over the top of the page so it never changes the toolbar's height
+        // (a layout shift mid-click would turn a click into a drag selection).
+        <div className="context-bar">
+          {!readOnly && <TableTools editor={props.editor} />}
+          <LinkTools editor={props.editor} readOnly={readOnly} onFollow={props.onFollowLink} />
+        </div>
+      )}
+      {!readOnly && (
+        // Always laid out (hidden while nothing is selected) so selecting an object
+        // never changes the toolbar's height and shifts the page under the pointer.
+        <div className={`tool-group arrange${selected ? '' : ' is-idle'}`} role="group" aria-label="Arrange selected object" aria-hidden={!selected} data-testid="arrange-tools">
+          <NumberField key={`x-${selected?.id}`} label="X" value={selected?.x ?? 0} disabled={!selected} onCommit={arrange('x')} />
+          <NumberField key={`y-${selected?.id}`} label="Y" value={selected?.y ?? 0} disabled={!selected} onCommit={arrange('y')} />
+          <NumberField key={`w-${selected?.id}`} label="W" value={selected?.w ?? 0} disabled={!selected} onCommit={arrange('w')} />
+          <NumberField key={`h-${selected?.id}`} label="H" value={selected?.h ?? 0} disabled={!selected || isText} onCommit={arrange('h')} />
+          <ToolButton label="Bring to front" disabled={!selected} onClick={props.onFront}>
             <IconFront />
           </ToolButton>
-          <ToolButton label="Send to back" onClick={props.onBack}>
+          <ToolButton label="Send to back" disabled={!selected} onClick={props.onBack}>
             <IconBack />
           </ToolButton>
-          <ToolButton label="Duplicate (Ctrl+D)" onClick={props.onDuplicate}>
+          <ToolButton label="Duplicate (Ctrl+D)" disabled={!selected} onClick={props.onDuplicate}>
             <IconDuplicate />
           </ToolButton>
-          <ToolButton label="Delete object" onClick={props.onDelete}>
+          <ToolButton label="Delete object" disabled={!selected} onClick={props.onDelete}>
             <IconTrash />
           </ToolButton>
         </div>

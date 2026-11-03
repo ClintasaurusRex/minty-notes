@@ -1,12 +1,12 @@
 /**
- * Core record types for the Minty Notes workspace (data format version 3).
+ * Core record types for the Minty Notes workspace (data format version 4).
  *
  * Every record has a stable ID. Links between records always use IDs,
  * never titles or folder names. See docs/DATA_FORMAT.md.
  */
 
 /** Version of the stored data and backup format. Bump with a migration. */
-export const FORMAT_VERSION = 3
+export const FORMAT_VERSION = 4
 
 /** Default notebook page width in CSS pixels (validated in Stage 0). */
 export const PAGE_WIDTH = 1200

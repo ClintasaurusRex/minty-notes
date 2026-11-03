@@ -78,6 +78,10 @@ Built in checked slices: data model + migrations + store + tests → board and t
 - **Storage:** new `tasks` and `templates` stores; everything goes through the same change sets, one-transaction autosave, owner-token fencing, revision counter, full backup/restore with validation, and held-edit reconciliation. **Migrations:** IndexedDB 3 → 4 (and 1/2 → 4) and backup format 2 → 3 (and 1 → 2 → 3).
 - **Deletion rules:** deleting a project forever deletes its tasks (named in the confirmation) and, as before, moves its notes to the page Trash; deleting a page forever, a category, or a tag removes it from tasks and templates. No ID ever points at a missing record.
 
+### Stage 4 — richer notes, annotations, and document import (0.4.0, in progress)
+Built in three checked slices on data format 4 / IndexedDB 5 (no record rewrites; see `DATA_FORMAT.md`).
+- **Slice 1 — tables, code, internal page links (done):** editable tables in text boxes (toolbar insert; Tab/Shift+Tab between cells, Tab in the last cell adds a row; floating row/column controls: add above/below/left/right, delete row/column, header row, merge/split, delete table); code blocks (toolbar or Ctrl+Alt+C; three Enters leave) and inline code (Ctrl+E or backticks); internal page links (`[[`, Ctrl+Shift+K, or the toolbar; on selected words or inserting the page title). Ctrl/Cmd+click or Alt+Enter follows a link (a plain click in a read-only window); “← Back to …” returns. Links are by page ID: moved/renamed pages keep working; a page in the Trash shows “in Trash” and following it offers Restore; a page deleted forever leaves the link text marked “deleted” (backups still restore, with a warning). Pages show “Linked from notes”; Trash and Delete-forever messages count linking notes. Alt+F10 jumps to the toolbar, Esc returns. Pasted HTML tables keep bounded spans (≤ 50) and no column widths.
+
 ## Verification
 
 | Check | Result | How |

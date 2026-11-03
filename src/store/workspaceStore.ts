@@ -22,6 +22,7 @@ import { isDateOnly } from '../domain/dates'
 import { isTaskPriority, isTaskStatus, moveTarget, placeTask, type TaskMove } from '../domain/tasks'
 import { instantiateNote, instantiateProject, pruneTemplateRefs, templateFromPage, templateFromProject } from '../domain/templates'
 import { docToPlainText } from '../domain/richtext'
+import { pageLinkIds } from '../domain/pageLink'
 import { isLinkedTo, keepExisting, ownerProjectId } from '../domain/references'
 import { normalize, type PageText } from '../domain/search'
 import { changeSetSize, describeStorageError, emptyChangeSet, type ChangeSet, type Repository } from '../storage/repository'
@@ -1204,6 +1205,29 @@ export class WorkspaceStore {
       texts.set(pageId, { text, attachmentIds })
     }
     return texts
+  }
+
+  /**
+   * Live pages whose text links to `pageId` (internal page links), read from
+   * every stored object with this window's open pages overlaid. A link is by
+   * ID, so moving or renaming the target never breaks it.
+   */
+  async pagesLinkingTo(pageId: string): Promise<Page[]> {
+    const byPage = new Map<string, CanvasObject[]>()
+    for (const o of await this.repo.loadAllObjects()) {
+      const list = byPage.get(o.pageId)
+      if (list) list.push(o)
+      else byPage.set(o.pageId, [o])
+    }
+    for (const [id, objects] of Object.entries(this.state.data.objects)) byPage.set(id, Object.values(objects))
+    const pages = this.state.data.pages
+    const out: Page[] = []
+    for (const [id, objects] of byPage) {
+      const page = pages[id]
+      if (!page || page.trashedAt || id === pageId) continue
+      if (objects.some((o) => o.type === 'text' && pageLinkIds(o.doc).includes(pageId))) out.push(page)
+    }
+    return out.sort((a, b) => a.title.localeCompare(b.title))
   }
 
   // ----------------------------------------------------------------- tasks

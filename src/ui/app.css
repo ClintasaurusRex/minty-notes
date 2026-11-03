@@ -486,6 +486,7 @@ button.pill {
 }
 
 .toolbar {
+  position: relative;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -544,6 +545,41 @@ button.pill {
   font-family: var(--mono);
   font-size: 12px;
 }
+.tool-label {
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.context-bar {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 12px;
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  pointer-events: none;
+}
+.context-bar > * {
+  pointer-events: auto;
+}
+.table-tools,
+.link-tools {
+  padding: 2px 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+.link-tools-name {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .zoom-readout {
   min-width: 40px;
   text-align: right;
@@ -557,8 +593,11 @@ button.pill {
   font-size: 11px;
   color: var(--text-3);
 }
+.tool-group.arrange.is-idle {
+  visibility: hidden;
+}
 .num-field input {
-  width: 58px;
+  width: 52px;
   height: 26px;
   padding: 0 4px;
   border: 1px solid var(--border);
@@ -777,6 +816,58 @@ button.pill {
 }
 .rt a {
   color: var(--mint);
+}
+/* Internal page links: dotted underline on a soft mint background (web links are solid). */
+.rt a.page-link {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--mint-soft);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.rt .page-link-trashed,
+.rt .page-link-missing {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+.rt .page-link-state[data-link-note]::after {
+  content: ' (' attr(data-link-note) ')';
+  font-size: 0.8em;
+  color: var(--warn);
+}
+/* Tables size to their text box; wide tables scroll inside it. */
+.rt .tableWrapper {
+  margin: 0.4em 0;
+  overflow-x: auto;
+}
+.rt table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.rt th,
+.rt td {
+  position: relative;
+  min-width: 2em;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  vertical-align: top;
+  text-align: left;
+}
+.rt th {
+  background: var(--raised);
+  font-weight: 600;
+}
+.rt th > p,
+.rt td > p {
+  margin: 0;
+}
+.rt .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--mint-soft);
+  pointer-events: none;
 }
 .rt p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
@@ -1973,4 +2064,51 @@ a.btn {
 .kind-task {
   background: var(--warn-soft);
   color: var(--warn);
+}
+
+/* ---------- page link picker ---------- */
+.page-picker .picker-input {
+  width: 100%;
+  margin: 10px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  color: var(--text);
+}
+.page-picker .picker-input:focus {
+  border-color: var(--mint-line);
+}
+.picker-list {
+  max-height: min(50vh, 420px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.picker-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.picker-list li.is-active {
+  background: var(--mint-soft);
+}
+.picker-list li.picker-empty {
+  cursor: default;
+}
+.picker-title {
+  color: var(--text);
+}
+.picker-where {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.back-link {
+  align-self: flex-start;
+  margin-bottom: 2px;
 }

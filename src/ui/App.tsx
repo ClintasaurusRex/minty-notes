@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useAppUpdate, useBackupState, useLockState, useServices, useWorkspace } from '../app/context'
+import { isLinkedTo } from '../domain/references'
 import { applyUpdate } from '../platform/serviceWorker'
 import { ReadOnlyError } from '../store/workspaceStore'
 import { PageView } from './canvas/PageView'
@@ -267,6 +268,8 @@ export function App() {
     return saved === 'tasks' || saved === 'files' ? saved : 'overview'
   })
   const [openTaskId, setOpenTaskId] = useState<string | null>(null)
+  /** Pages left by following page links (most recent last); cleared by any other navigation. */
+  const [backStack, setBackStack] = useState<{ pageId: string; projectId: string | null }[]>([])
   const setTab = (tab: ProjectTab) => {
     setProjectTab(tab)
     writePref('project-tab', tab)
@@ -286,9 +289,10 @@ export function App() {
   }
 
   /** Open a page; `context` opens it inside a project (for linked references). */
-  const openPage = (id: string, context?: string | null) => {
+  const openPage = (id: string, context?: string | null, keepBack = false) => {
     const page = store.getState().data.pages[id]
     if (!page) return
+    if (!keepBack) setBackStack([])
     const owner = page.location.kind === 'project' ? page.location.projectId : null
     const inProject = context ?? owner
     if (inProject) {
@@ -302,6 +306,7 @@ export function App() {
     if (isNarrow()) setNavOpen(false)
   }
   const openProject = (id: string | null, options: OpenProjectOptions = {}) => {
+    setBackStack([])
     setSec('projects')
     // A different project opens on its overview unless a tab is asked for.
     if (options.tab) setTab(options.tab)
@@ -312,13 +317,51 @@ export function App() {
     if (isNarrow() && id) setNavOpen(false)
   }
   const go = (s: NavSection) => {
+    setBackStack([])
     if (s === 'projects' && section !== 'projects') setPage(null)
     setSec(s)
     // On a phone-sized screen the page list overlays the page; show it when switching lists.
     if (isNarrow() && LIST_SECTIONS.includes(s)) setNavOpen(true)
   }
 
+  const followPageLink = (id: string) => {
+    const { data: current, readOnly } = store.getState()
+    const target = current.pages[id]
+    if (!target) {
+      notify('info', 'This link points to a page that was deleted forever. The link text is kept so you can see what it referred to.')
+      return
+    }
+    if (target.trashedAt) {
+      if (readOnly) {
+        notify('info', `“${target.title}” is in the Trash. Restore it from the Trash in the editing window to open it.`)
+        return
+      }
+      if (!window.confirm(`“${target.title}” is in the Trash. Restore it and open it?`)) return
+      store.restorePage(id)
+    }
+    const from = pageId && current.pages[pageId] && !current.pages[pageId].trashedAt ? { pageId, projectId: section === 'projects' ? (projectId ?? null) : null } : null
+    const restored = store.getState().data.pages[id]
+    // Stay in the current project when the target is one of its notes or linked references.
+    const ctxProject = from?.projectId ? store.getState().data.projects[from.projectId] : undefined
+    const context = ctxProject && restored && (isLinkedTo(ctxProject, restored, store.getState().data) || (restored.location.kind === 'project' && restored.location.projectId === ctxProject.id)) ? ctxProject.id : undefined
+    openPage(id, context, true)
+    if (from && from.pageId !== id) setBackStack((stack) => [...stack.slice(-19), from])
+  }
+
+  const goBack = () => {
+    const last = backStack[backStack.length - 1]
+    if (!last) return
+    setBackStack((stack) => stack.slice(0, -1))
+    const target = store.getState().data.pages[last.pageId]
+    if (!target || target.trashedAt) {
+      notify('info', 'The page you came from is no longer available.')
+      return
+    }
+    openPage(last.pageId, last.projectId, true)
+  }
+
   const quickNote = () => {
+    setBackStack([])
     try {
       const page = store.createPage({ kind: 'inbox' })
       setSec('inbox')
@@ -356,7 +399,9 @@ export function App() {
   const pageProject = section === 'projects' && project ? project.id : null
   const showPage = LIST_SECTIONS.includes(section) && section !== 'trash' && page && !page.trashedAt && (section !== 'projects' || !!pageProject)
   const listVisible = navOpen && LIST_SECTIONS.includes(section)
-  const nav: Nav = { section, pageId, projectId: project?.id ?? null, projectTab, go, openPage, openProject, quickNote }
+  const lastBack = backStack[backStack.length - 1]
+  const back = lastBack && pages[lastBack.pageId] ? { pageId: lastBack.pageId, title: pages[lastBack.pageId].title } : null
+  const nav: Nav = { section, pageId, projectId: project?.id ?? null, projectTab, go, openPage: (id, context) => openPage(id, context), openProject, quickNote, followPageLink, back, goBack }
 
   let main
   if (section === 'settings') main = <SettingsView />

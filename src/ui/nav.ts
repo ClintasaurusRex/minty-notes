@@ -21,6 +21,15 @@ export interface Nav {
   openPage: (pageId: string, projectId?: string | null) => void
   openProject: (projectId: string | null, options?: OpenProjectOptions) => void
   quickNote: () => void
+  /**
+   * Follow an internal page link: opens the page (keeping the current project
+   * when the page is linked there), offers to restore a page in the Trash, and
+   * explains a page that was deleted forever. Remembers where it came from.
+   */
+  followPageLink: (pageId: string) => void
+  /** The page a followed link came from (null after any other navigation). */
+  back: { pageId: string; title: string } | null
+  goBack: () => void
 }
 
 export const NavContext = createContext<Nav | null>(null)

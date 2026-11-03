@@ -304,7 +304,7 @@ describe('backup and restore of Stage 2 records', () => {
     const validated = await readArchive(await buildStage1Archive(stage1, blobs))
     if (!validated.ok) throw new Error(validated.errors.join('\n'))
     expect(validated.summary.formatVersion).toBe(1)
-    expect(validated.records.workspace.formatVersion).toBe(3) // format 1 → 2 → 3
+    expect(validated.records.workspace.formatVersion).toBe(4) // format 1 → 2 → 3 → 4
     expect(validated.records.pages.find((p) => p.id === ref.id)).toMatchObject({ categoryIds: [], tagIds: [], copiedFrom: null, title: 'Alarm setup' })
     expect(validated.records.projects).toEqual([])
   })

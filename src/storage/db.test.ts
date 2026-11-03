@@ -2,11 +2,12 @@ import { openDB } from 'idb'
 import { describe, expect, it } from 'vitest'
 import { readArchive } from '../backup/archive'
 import { BackupService } from '../backup/backupService'
-import { docFromPlainText, docToPlainText } from '../domain/richtext'
+import { docFromPlainText, docToPlainText, validateRichTextDoc } from '../domain/richtext'
 import { FORMAT_VERSION, newId, nowIso, type TextObject } from '../domain/types'
 import { freshStore } from '../test/fixtures'
+import { technicalDoc } from '../test/richDocs'
 import { WorkspaceStore } from '../store/workspaceStore'
-import { createV1Stores, createV3Stores, DB_VERSION, type MintyDB } from './db'
+import { createV1Stores, createV3Stores, createV4Stores, DB_VERSION, type MintyDB } from './db'
 import { emptyChangeSet, IdbRepository } from './repository'
 
 let n = 0
@@ -49,8 +50,8 @@ async function makeLegacyDatabase(version: 1 | 2, withActivity: boolean) {
 }
 
 describe('IndexedDB migrations', () => {
-  it('1 → 4: adds the revision, repairs the trashed orphan, and adds Stage 2 and 3 fields', async () => {
-    expect(DB_VERSION).toBe(4)
+  it("1 → 5: adds the revision, repairs the trashed orphan, and adds Stage 2 and 3 fields", async () => {
+    expect(DB_VERSION).toBe(5)
     const v1 = await makeLegacyDatabase(1, true)
     const repo = await IdbRepository.open(v1.name)
     const index = await repo.loadIndex()
@@ -71,7 +72,7 @@ describe('IndexedDB migrations', () => {
     repo.close()
   })
 
-  it('2 → 4: keeps every Stage 1 note, ID, attachment, and layout; the result backs up and restores', async () => {
+  it('2 → 5: keeps every Stage 1 note, ID, attachment, and layout; the result backs up and restores', async () => {
     const v2 = await makeLegacyDatabase(2, true)
     const repo = await IdbRepository.open(v2.name)
     const store = new WorkspaceStore(repo, { debounceMs: 5, maxWaitMs: 20 })
@@ -131,7 +132,7 @@ describe('IndexedDB migrations', () => {
     after.close()
   })
 
-  it('3 → 4: keeps every Stage 2 record; adds task and template stores and file-location descriptions', async () => {
+  it('3 → 5: keeps every Stage 2 record; adds task and template stores and file-location descriptions', async () => {
     const name = `minty-v3-${Date.now()}-${n++}`
     const db = await openDB<MintyDB>(name, 3, { upgrade: (d) => {
       createV1Stores(d)
@@ -163,7 +164,7 @@ describe('IndexedDB migrations', () => {
     await store.becomeEditor()
     const { data } = store.getState()
     expect(data.revision).toBe(42)
-    expect(data.workspace).toMatchObject({ workspaceId: 'ws-stage2', formatVersion: 3 })
+    expect(data.workspace).toMatchObject({ workspaceId: "ws-stage2", formatVersion: FORMAT_VERSION })
     expect(data.tasks).toEqual({})
     expect(data.templates).toEqual({})
     const migrated = data.projects[project.id]
@@ -210,6 +211,107 @@ describe('IndexedDB migrations', () => {
     expect(after.version).toBe(3)
     expect(after.objectStoreNames.contains('tasks')).toBe(false)
     expect(((await after.getAll('projects')) as { fileLocations: object[] }[])[0].fileLocations[0]).not.toHaveProperty('description')
+    after.close()
+  })
+  /** A database exactly as app 0.3.0 (schema 4, data format 3) left it. */
+  async function makeStage3Database() {
+    const name = `minty-v4-${Date.now()}-${n++}`
+    const db = await openDB<MintyDB>(name, 4, { upgrade: (d) => {
+      createV1Stores(d)
+      createV3Stores(d)
+      createV4Stores(d)
+    } })
+    const r = stage1Records()
+    const put = (store: string, value: unknown, key?: string) => (db.put as (s: string, v: unknown, k?: string) => Promise<unknown>)(store, value, key)
+    const category = { id: newId(), name: 'VTScada', order: 1, createdAt: r.at, updatedAt: r.at }
+    const project = {
+      id: newId(), name: 'Stage 3 plant', customer: 'C', site: 'S', jobNumber: 'J-3', description: '', status: 'active', dueDate: '2026-12-15',
+      contacts: [], equipment: [], software: [], fileLocations: [{ id: newId(), label: 'Folder', kind: 'path', value: 'C:\\Jobs\\J-3', description: 'Job folder' }],
+      categoryIds: [category.id], pinnedPageIds: [r.live.id], hiddenPageIds: [], order: 1, archivedAt: null, trashedAt: null, createdAt: r.at, updatedAt: r.at,
+    }
+    const notebook = { ...r.notebook, categoryIds: [category.id] }
+    const section = { ...r.section, categoryIds: [] }
+    const live = { ...r.live, categoryIds: [], tagIds: [], copiedFrom: null }
+    const note = { ...r.inbox, location: { kind: 'project', projectId: project.id }, categoryIds: [], tagIds: [], copiedFrom: null }
+    const task = { id: newId(), projectId: project.id, title: 'Check alarms', description: '', status: 'doing', priority: 'high', dueDate: '2026-11-20', linkedPageIds: [note.id], order: 1, completedAt: null, createdAt: r.at, updatedAt: r.at }
+    const template = { id: newId(), kind: 'note', name: 'Site visit', description: '', notes: [{ title: 'Visit', categoryIds: [], tagIds: [], objects: [{ type: 'text', x: 48, y: 48, w: 400, h: 40, z: 1, doc: docFromPlainText('Arrive') }] }], project: null, tasks: [], createdAt: r.at, updatedAt: r.at }
+    const records = { category, project, notebook, section, live, note, task, template, text: r.text, image: { ...r.image, pageId: note.id }, attachment: r.attachment }
+    await put('categories', category)
+    await put('projects', project)
+    await put('notebooks', notebook)
+    await put('sections', section)
+    await put('pages', live)
+    await put('pages', note)
+    await put('objects', records.text)
+    await put('objects', records.image)
+    await put('attachments', r.attachment)
+    await put('blobs', new Blob([new Uint8Array([1, 2, 3])]), r.attachment.id)
+    await put('tasks', task)
+    await put('templates', template)
+    await put('settings', { workspaceId: 'ws-stage3', formatVersion: 3, createdAt: r.at }, 'workspace')
+    await put('settings', { lastChangeAt: r.at, revision: 99 }, 'activity')
+    db.close()
+    return { name, ...records }
+  }
+
+  it('4 → 5: keeps every Stage 3 record unchanged; tables and page links then save, back up, and restore', async () => {
+    const v4 = await makeStage3Database()
+    const repo = await IdbRepository.open(v4.name)
+    const { records, revision } = await repo.readAll()
+    expect(revision).toBe(99)
+    expect(records.workspace).toMatchObject({ workspaceId: 'ws-stage3', formatVersion: FORMAT_VERSION })
+    expect(FORMAT_VERSION).toBe(4)
+    // Byte-for-byte the same records: no Stage 3 record is rewritten by the upgrade.
+    expect(records.projects).toEqual([v4.project])
+    expect(records.tasks).toEqual([v4.task])
+    expect(records.templates).toEqual([v4.template])
+    expect(records.categories).toEqual([v4.category])
+    expect(records.notebooks).toEqual([v4.notebook])
+    expect(records.sections).toEqual([v4.section])
+    expect(records.pages.sort((a, b) => a.title.localeCompare(b.title))).toEqual([v4.live, v4.note].sort((a, b) => a.title.localeCompare(b.title)))
+    expect(records.objects.sort((a, b) => a.z - b.z)).toEqual([v4.text, v4.image])
+    expect(records.attachments).toEqual([v4.attachment])
+
+    const store = new WorkspaceStore(repo, { debounceMs: 5, maxWaitMs: 20 })
+    await store.load()
+    await store.becomeEditor()
+    await store.ensurePageObjects(v4.live.id)
+    const doc = technicalDoc(v4.note.id)
+    expect(validateRichTextDoc(doc)).toBeNull()
+    store.setTextDoc(v4.live.id, v4.text.id, doc)
+    await store.flush()
+    const reopened = new WorkspaceStore(await IdbRepository.open(v4.name), { debounceMs: 5, maxWaitMs: 20 })
+    await reopened.load()
+    expect(((await reopened.ensurePageObjects(v4.live.id))[v4.text.id] as TextObject).doc).toEqual(doc)
+
+    const { bytes } = await new BackupService(store, { appVersion: 'test', folderSupported: false }).createArchive()
+    const validated = await readArchive(bytes)
+    if (!validated.ok) throw new Error(validated.errors.join('; '))
+    expect(validated.summary.formatVersion).toBe(4)
+    const clean = await freshStore()
+    await clean.store.becomeEditor()
+    await new BackupService(clean.store, { appVersion: 'test', folderSupported: false }).restore(validated)
+    expect(((await clean.store.ensurePageObjects(v4.live.id))[v4.text.id] as TextObject).doc).toEqual(doc)
+    expect(clean.store.getState().data.tasks[v4.task.id]).toEqual(v4.task)
+    repo.close()
+  })
+
+  it('a failed version-5 migration leaves the version-4 database untouched', async () => {
+    const v4 = await makeStage3Database()
+    const original = IDBObjectStore.prototype.put
+    IDBObjectStore.prototype.put = function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['put']>) {
+      if (this.name === 'settings') throw new DOMException('simulated failure', 'UnknownError')
+      return original.apply(this, args)
+    }
+    try {
+      await expect(IdbRepository.open(v4.name)).rejects.toBeTruthy()
+    } finally {
+      IDBObjectStore.prototype.put = original
+    }
+    const after = await openDB(v4.name)
+    expect(after.version).toBe(4)
+    expect(await after.get('settings', 'workspace')).toMatchObject({ formatVersion: 3 })
+    expect(await after.getAll('tasks')).toEqual([v4.task])
     after.close()
   })
 })

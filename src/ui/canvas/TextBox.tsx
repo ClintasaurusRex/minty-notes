@@ -1,10 +1,19 @@
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useServices } from '../../app/context'
+import { pageLinkTooltip, pageLinkState } from '../../domain/pageLink'
 import { richTextExtensions } from '../../domain/richtext'
 import type { RichTextDoc, TextObject } from '../../domain/types'
 import { useCanvas } from './CanvasContext'
 import { ObjectFrame } from './ObjectFrame'
+import { PAGE_LINK_FOLLOW, PAGE_LINK_REQUEST, PageLinkUi, type PageLinkRequestDetail } from './pageLinkUi'
+
+/** Alt+F10 moves focus to the page toolbar (a common editor convention); Esc there returns. */
+function focusToolbar(): boolean {
+  const first = document.querySelector<HTMLElement>('.toolbar button:not(:disabled)')
+  first?.focus()
+  return !!first
+}
 
 /** Focus synchronously (TipTap defers focus a frame), so the next keystroke lands in the text. */
 function focusEnd(editor: Editor): void {
@@ -29,7 +38,15 @@ export function TextBox({ obj }: { obj: TextObject }) {
   })
 
   const editor = useEditor({
-    extensions: richTextExtensions,
+    extensions: [
+      ...richTextExtensions,
+      PageLinkUi.configure({
+        status: (pageId) => {
+          const pages = store.getState().data.pages
+          return { state: pageLinkState(pageId, pages).state, tooltip: pageLinkTooltip(pageId, pages) }
+        },
+      }),
+    ],
     content: obj.doc,
     editable: !readOnly,
     immediatelyRender: true,
@@ -42,12 +59,13 @@ export function TextBox({ obj }: { obj: TextObject }) {
           frameRef.current?.focus()
           return true
         }
+        if (event.key === 'F10' && event.altKey) return focusToolbar()
         return false
       },
       handleClick: (_view, _pos, event) => {
         if (!(event.ctrlKey || event.metaKey)) return false
         const link = (event.target as HTMLElement).closest('a')
-        if (!link?.href) return false
+        if (!link || link.hasAttribute('data-page-id') || !link.href) return false
         window.open(link.href, '_blank', 'noopener,noreferrer')
         return true
       },
@@ -69,6 +87,14 @@ export function TextBox({ obj }: { obj: TextObject }) {
       lastDoc.current = doc
       store.setTextDoc(apiRef.current.pageId, id, doc)
     }
+    const dom = editor.view.dom
+    const onLinkRequest = (e: Event) => {
+      const d = (e as CustomEvent<PageLinkRequestDetail>).detail
+      apiRef.current.requestPageLink(id, { from: d.from, to: d.to }, d.restore)
+    }
+    const onLinkFollow = (e: Event) => apiRef.current.followPageLink(String((e as CustomEvent<string>).detail))
+    dom.addEventListener(PAGE_LINK_REQUEST, onLinkRequest)
+    dom.addEventListener(PAGE_LINK_FOLLOW, onLinkFollow)
     const onFocus = () => apiRef.current.onTextFocus(id)
     const onBlur = () => apiRef.current.onTextBlur(id, editor.isEmpty)
     editor.on('update', onUpdate)
@@ -78,6 +104,8 @@ export function TextBox({ obj }: { obj: TextObject }) {
       editor.off('update', onUpdate)
       editor.off('focus', onFocus)
       editor.off('blur', onBlur)
+      dom.removeEventListener(PAGE_LINK_REQUEST, onLinkRequest)
+      dom.removeEventListener(PAGE_LINK_FOLLOW, onLinkFollow)
     }
   }, [editor, store, id])
 
@@ -102,7 +130,27 @@ export function TextBox({ obj }: { obj: TextObject }) {
 
   return (
     <ObjectFrame obj={obj} handles={['w', 'e']} label="Text box" bodyDrag={false} frameRef={setFrame} onEnter={() => focusEnd(editor)}>
-      <EditorContent editor={editor} className="obj-text-body" />
+      {/* Page links open with Ctrl/Cmd+click, or a plain click when the page is read-only. */}
+      <div
+        className="obj-text-links"
+        onMouseDownCapture={(e) => {
+          // Ctrl/Cmd+click follows on press, before the editor moves the cursor.
+          const link = (e.target as HTMLElement).closest('a[data-page-id]')
+          if (!link || e.button !== 0 || !(e.ctrlKey || e.metaKey)) return
+          e.preventDefault()
+          e.stopPropagation()
+          api.followPageLink(link.getAttribute('data-page-id') ?? '')
+        }}
+        onClickCapture={(e) => {
+          const link = (e.target as HTMLElement).closest('a[data-page-id]')
+          if (!link || !readOnly || e.ctrlKey || e.metaKey) return
+          e.preventDefault()
+          e.stopPropagation()
+          api.followPageLink(link.getAttribute('data-page-id') ?? '')
+        }}
+      >
+        <EditorContent editor={editor} className="obj-text-body" />
+      </div>
     </ObjectFrame>
   )
 }

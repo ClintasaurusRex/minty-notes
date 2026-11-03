@@ -412,7 +412,7 @@ describe('backup and restore of Stage 3 records', () => {
     const validated = await readArchive(bytes)
     if (!validated.ok) throw new Error(validated.errors.join('\n'))
     expect(validated.summary.formatVersion).toBe(2)
-    expect(validated.records.workspace.formatVersion).toBe(3)
+    expect(validated.records.workspace.formatVersion).toBe(4)
     expect(validated.records.tasks).toEqual([])
     expect(validated.records.templates).toEqual([])
     expect(validated.records.projects[0].fileLocations[0]).toMatchObject({ label: 'Folder', value: 'C:\\Jobs', description: '' })
@@ -427,7 +427,7 @@ describe('backup and restore of Stage 3 records', () => {
     await backupRestores(clean.store)
   })
 
-  it('a Stage 1 (format 1) backup still restores (format 1 → 2 → 3)', async () => {
+  it('a Stage 1 (format 1) backup still restores (format 1 → 2 → 3 → 4)', async () => {
     const { store, repo, ref } = await vtscadaJob()
     await store.flush()
     const { records, blobs } = await repo.readAll()
@@ -436,7 +436,7 @@ describe('backup and restore of Stage 3 records', () => {
     const used = new Set<string>()
     const validated = await readArchive(await buildStage1Archive({ ...stage1, objects: stage1Objects, attachments: [] }, new Map([...blobs].filter(([id]) => used.has(id)))))
     if (!validated.ok) throw new Error(validated.errors.join('\n'))
-    expect(validated.records.workspace.formatVersion).toBe(3)
+    expect(validated.records.workspace.formatVersion).toBe(4)
     expect(validated.records.tasks).toEqual([])
     expect(validated.records.pages.map((p) => p.id)).toEqual([ref.id])
   })

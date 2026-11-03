@@ -19,6 +19,10 @@ export interface CanvasApi {
   duplicate: (id: string) => void
   remove: (id: string) => void
   focusPage: () => void
+  /** Open the page-link picker for a text box's selection; `restore` is put back on cancel. */
+  requestPageLink: (editorId: string, range: { from: number; to: number }, restore: string) => void
+  /** Follow an internal page link (handles Trash and deleted targets). */
+  followPageLink: (pageId: string) => void
 }
 
 export const CanvasContext = createContext<CanvasApi | null>(null)

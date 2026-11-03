@@ -1,5 +1,6 @@
 import { unzip, zip, type AsyncZippable, type Unzipped } from 'fflate'
 import { isDateOnly } from '../domain/dates'
+import { pageLinkIds } from '../domain/pageLink'
 import { validateRichTextDoc } from '../domain/richtext'
 import { isTaskPriority, isTaskStatus } from '../domain/tasks'
 import { templateAttachmentIds } from '../domain/templates'
@@ -35,7 +36,7 @@ export interface Manifest {
   app: { name: string; version: string }
   createdAt: string
   workspaceId: string
-  /** Format 2 adds projects, categories, and tags; format 3 adds tasks and templates. */
+  /** Format 2 adds projects, categories, and tags; format 3 adds tasks and templates; format 4 adds no lists. */
   counts: { projects?: number; tasks?: number; templates?: number; categories?: number; tags?: number; notebooks: number; sections: number; pages: number; objects: number; attachments: number }
   records: { path: string; size: number; sha256: string }
   files: ManifestFile[]
@@ -487,6 +488,15 @@ export function migrateRecordsV2toV3(raw: unknown): void {
 }
 
 /**
+ * Format 3 → 4 (Stage 4): no record changes. Format 4 only adds optional
+ * fields and new rich-text content, so older records are already valid.
+ */
+export function migrateRecordsV3toV4(raw: unknown): void {
+  if (!isObj(raw)) return
+  if (isObj(raw.workspace) && isNum(raw.workspace.formatVersion) && raw.workspace.formatVersion < 4) raw.workspace = { ...raw.workspace, formatVersion: 4 }
+}
+
+/**
  * App 0.2.0 stored any value Chrome's date field produced, including a
  * five-digit year (e.g. `20261-12-15`), which this validation rejects. So a
  * backup is not refused as a whole for that: an invalid due date is cleared,
@@ -543,6 +553,7 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
     migrateRecordsV1toV2(raw)
   }
   if (m.formatVersion <= 2) migrateRecordsV2toV3(raw)
+  if (m.formatVersion <= 3) migrateRecordsV3toV4(raw)
   repairDueDates(raw, warnings)
   const checker = new Checker(errors)
   const records = validateRecords(raw, checker)
@@ -576,6 +587,16 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
   for (const t of records.templates) for (const id of templateAttachmentIds(t)) referenced.add(id)
   const unused = records.attachments.filter((a) => !referenced.has(a.id)).length
   if (unused > 0) warnings.push(`${unused} stored image${unused === 1 ? ' is' : 's are'} not placed on any page (kept for completeness).`)
+
+  // Links to pages deleted forever are kept in the text and shown as deleted links.
+  const pageIds = new Set(records.pages.map((p) => p.id))
+  const dangles = (doc: unknown) => pageLinkIds(doc as never).some((id) => !pageIds.has(id))
+  const notes = new Set(records.objects.filter((o) => o.type === 'text' && dangles(o.doc)).map((o) => o.pageId)).size
+  const templatesWith = records.templates.filter((t) => t.notes.some((n) => n.objects.some((o) => o.type === 'text' && dangles(o.doc)))).length
+  if (notes + templatesWith > 0) {
+    const parts = [notes ? `${notes} note${notes === 1 ? '' : 's'}` : '', templatesWith ? `${templatesWith} template${templatesWith === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')
+    warnings.push(`${parts} link${notes + templatesWith === 1 ? 's' : ''} to a page that was deleted forever; the link text is kept and shown as a deleted-page link.`)
+  }
 
   return {
     ok: true,

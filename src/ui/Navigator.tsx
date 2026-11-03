@@ -344,9 +344,11 @@ export function Navigator({ section, pageId, projectId, onOpenPage, onOpenProjec
                     <button
                       type="button"
                       className="btn btn-small btn-danger"
-                      onClick={() => {
+                      onClick={async () => {
                         const taskLinks = Object.values(tasks).filter((t) => t.linkedPageIds.includes(p.id)).length
-                        if (window.confirm(`Delete “${p.title}” forever? Its text and layout will be removed from this workspace.${taskLinks ? ` It is also unlinked from ${taskLinks} task${taskLinks === 1 ? '' : 's'} (the tasks stay).` : ''}`)) {
+                        const noteLinks = (await store.pagesLinkingTo(p.id).catch(() => [])).length
+                        const notes = noteLinks ? ` ${noteLinks} note${noteLinks === 1 ? ' links' : 's link'} to it; the link text stays and is shown as a link to a deleted page.` : ''
+                        if (window.confirm(`Delete “${p.title}” forever? Its text and layout will be removed from this workspace.${taskLinks ? ` It is also unlinked from ${taskLinks} task${taskLinks === 1 ? '' : 's'} (the tasks stay).` : ''}${notes}`)) {
                           store.deletePageForever(p.id).catch((err: unknown) => notify('error', String(err)))
                         }
                       }}
