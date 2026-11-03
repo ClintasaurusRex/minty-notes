@@ -13,11 +13,13 @@ interface Props {
   bodyDrag: boolean
   frameRef?: (el: HTMLDivElement | null) => void
   onEnter?: () => void
+  /** What Enter does (read by screen readers), e.g. "Enter edits". */
+  enterHint?: string
   children: ReactNode
 }
 
 /** Positioned container with selection outline, move/resize, and keyboard control. */
-export function ObjectFrame({ obj, handles, label, bodyDrag, frameRef, onEnter, children }: Props) {
+export function ObjectFrame({ obj, handles, label, bodyDrag, frameRef, onEnter, enterHint = 'Enter edits', children }: Props) {
   const api = useCanvas()
   const { store } = useServices()
   const selected = api.selectedId === obj.id
@@ -125,7 +127,7 @@ export function ObjectFrame({ obj, handles, label, bodyDrag, frameRef, onEnter, 
       tabIndex={0}
       role="group"
       aria-roledescription="movable object"
-      aria-label={`${label}. Arrow keys move, Alt+arrow keys resize, Delete removes${onEnter ? ', Enter edits' : ''}.`}
+      aria-label={`${label}. Arrow keys move, Alt+arrow keys resize, Delete removes${onEnter ? `, ${enterHint}` : ''}.`}
       data-object-id={obj.id}
       onKeyDown={onKeyDown}
       onPointerDown={onFramePointerDown}

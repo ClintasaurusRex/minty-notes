@@ -376,7 +376,8 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'n') {
+      // Not while a modal dialog (e.g. the markup editor) holds unsaved work.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'n' && !document.querySelector('dialog[open]')) {
         e.preventDefault()
         quickNote()
       }

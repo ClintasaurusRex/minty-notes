@@ -31,11 +31,12 @@ export function noteToTemplate(page: Page, objects: CanvasObject[]): TemplateNot
     title: page.title,
     categoryIds: [...page.categoryIds],
     tagIds: [...page.tagIds],
-    objects: sorted.map((o): TemplateObject =>
-      o.type === 'text'
-        ? { type: 'text', x: o.x, y: o.y, w: o.w, h: o.h, z: o.z, doc: structuredClone(o.doc) }
-        : { type: 'image', x: o.x, y: o.y, w: o.w, h: o.h, z: o.z, attachmentId: o.attachmentId, alt: o.alt },
-    ),
+    objects: sorted.map((o): TemplateObject => {
+      const at = { x: o.x, y: o.y, w: o.w, h: o.h, z: o.z }
+      if (o.type === 'text') return { type: 'text', ...at, doc: structuredClone(o.doc) }
+      if (o.type === 'sketch') return { type: 'sketch', ...at, markup: structuredClone(o.markup) }
+      return { type: 'image', ...at, attachmentId: o.attachmentId, alt: o.alt, ...(o.markup ? { markup: structuredClone(o.markup) } : {}) }
+    }),
   }
 }
 
@@ -117,7 +118,8 @@ export function instantiateNote(note: TemplateNote, location: PageLocation, orde
   for (const o of note.objects) {
     const base = { id: newId(), pageId: page.id, x: o.x, y: o.y, w: o.w, h: o.h, z: o.z, createdAt: at, updatedAt: at }
     if (o.type === 'text') objects.push({ ...base, type: 'text', doc: structuredClone(o.doc) })
-    else if (o.attachmentId in existing.attachments) objects.push({ ...base, type: 'image', attachmentId: o.attachmentId, alt: o.alt })
+    else if (o.type === 'sketch') objects.push({ ...base, type: 'sketch', markup: structuredClone(o.markup) })
+    else if (o.attachmentId in existing.attachments) objects.push({ ...base, type: 'image', attachmentId: o.attachmentId, alt: o.alt, ...(o.markup ? { markup: structuredClone(o.markup) } : {}) })
   }
   return { page, objects }
 }

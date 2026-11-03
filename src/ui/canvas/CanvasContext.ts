@@ -23,6 +23,8 @@ export interface CanvasApi {
   requestPageLink: (editorId: string, range: { from: number; to: number }, restore: string) => void
   /** Follow an internal page link (handles Trash and deleted targets). */
   followPageLink: (pageId: string) => void
+  /** Open the markup editor for an image or sketch. */
+  openMarkup: (id: string) => void
 }
 
 export const CanvasContext = createContext<CanvasApi | null>(null)

@@ -1,5 +1,6 @@
 import { unzip, zip, type AsyncZippable, type Unzipped } from 'fflate'
 import { isDateOnly } from '../domain/dates'
+import { validateMarkup } from '../domain/markup'
 import { pageLinkIds } from '../domain/pageLink'
 import { validateRichTextDoc } from '../domain/richtext'
 import { isTaskPriority, isTaskStatus } from '../domain/tasks'
@@ -378,6 +379,13 @@ function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
           c.require(problem === null, `Text in template “${name}” is not valid: ${problem}`)
         } else if (obj.type === 'image') {
           if (c.require(isId(obj.attachmentId) && isStr(obj.alt), `Template “${name}” has an invalid image.`)) c.require(attachmentIds.has(obj.attachmentId), `Template “${name}” refers to a missing attachment.`)
+          if (obj.markup !== undefined) {
+            const problem = validateMarkup(obj.markup, true)
+            c.require(problem === null, `Image markup in template “${name}” is not valid: ${problem}`)
+          }
+        } else if (obj.type === 'sketch') {
+          const problem = validateMarkup(obj.markup, false)
+          c.require(problem === null, `Sketch in template “${name}” is not valid: ${problem}`)
         } else c.fail(`Template “${name}” has an object of unknown type.`)
       })
     })
@@ -422,6 +430,13 @@ function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
       if (c.require(isId(o.attachmentId) && isStr(o.alt), `Image object ${o.id} is invalid.`)) {
         c.require(attachmentIds.has(o.attachmentId), `Image object ${o.id} refers to a missing attachment.`)
       }
+      if (o.markup !== undefined) {
+        const problem = validateMarkup(o.markup, true)
+        c.require(problem === null, `Markup on image ${o.id} is not valid: ${problem}`)
+      }
+    } else if (o.type === 'sketch') {
+      const problem = validateMarkup(o.markup, false)
+      c.require(problem === null, `Sketch ${o.id} is not valid: ${problem}`)
     } else {
       c.fail(`Canvas object ${o.id} has an unknown type.`)
     }

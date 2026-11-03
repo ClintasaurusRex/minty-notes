@@ -190,9 +190,55 @@ export interface ImageObject extends CanvasObjectBase {
   type: 'image'
   attachmentId: string
   alt: string
+  /**
+   * Editable annotations and crop (format 4; absent when the image was never
+   * marked up). The attachment bytes are never changed by markup.
+   */
+  markup?: Markup
 }
 
-export type CanvasObject = TextObject | ImageObject
+/** A freehand/vector drawing on the page (format 4), e.g. a simple wiring sketch. */
+export interface SketchObject extends CanvasObjectBase {
+  type: 'sketch'
+  /** Drawing coordinate space and items (`crop` is always null). */
+  markup: Markup
+}
+
+export type CanvasObject = TextObject | ImageObject | SketchObject
+
+/** A rectangle in markup coordinates. */
+export interface MarkupRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/**
+ * One annotation. Coordinates and sizes are in the markup's own space (an
+ * image's natural pixels, or a sketch's drawing size), so they scale with the
+ * object. `blur` is visual only; `redact` is an opaque cover. Neither removes
+ * pixels from the stored original; only a flattened export replaces them.
+ */
+export type Annotation =
+  | { id: string; kind: 'arrow' | 'line'; x1: number; y1: number; x2: number; y2: number; color: string; width: number }
+  | { id: string; kind: 'rect' | 'ellipse'; x: number; y: number; w: number; h: number; color: string; width: number; fill: string | null }
+  | { id: string; kind: 'text'; x: number; y: number; text: string; color: string; size: number; background: string | null }
+  | { id: string; kind: 'pen' | 'highlighter'; points: number[]; color: string; width: number }
+  | { id: string; kind: 'blur' | 'redact'; x: number; y: number; w: number; h: number }
+
+export type AnnotationKind = Annotation['kind']
+
+/** Annotations on an image or in a sketch (format 4). */
+export interface Markup {
+  /** Size of the coordinate space: the image's natural pixel size, or the sketch's drawing size. */
+  width: number
+  height: number
+  /** Visible part of the image (null = all of it; always null for sketches). Non-destructive. */
+  crop: MarkupRect | null
+  /** Drawn in order (later on top); blur and redact areas are drawn under the others. */
+  items: Annotation[]
+}
 
 export interface AttachmentMeta {
   id: string
@@ -240,7 +286,8 @@ export interface Task {
 /** A canvas object stored inside a template (no IDs: new ones are made on use). */
 export type TemplateObject =
   | { type: 'text'; x: number; y: number; w: number; h: number; z: number; doc: RichTextDoc }
-  | { type: 'image'; x: number; y: number; w: number; h: number; z: number; attachmentId: string; alt: string }
+  | { type: 'image'; x: number; y: number; w: number; h: number; z: number; attachmentId: string; alt: string; markup?: Markup }
+  | { type: 'sketch'; x: number; y: number; w: number; h: number; z: number; markup: Markup }
 
 /** One note inside a template. */
 export interface TemplateNote {

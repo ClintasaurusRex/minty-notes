@@ -23,6 +23,7 @@ import { isTaskPriority, isTaskStatus, moveTarget, placeTask, type TaskMove } fr
 import { instantiateNote, instantiateProject, pruneTemplateRefs, templateFromPage, templateFromProject } from '../domain/templates'
 import { docToPlainText } from '../domain/richtext'
 import { pageLinkIds } from '../domain/pageLink'
+import { markupText } from '../domain/markup'
 import { isLinkedTo, keepExisting, ownerProjectId } from '../domain/references'
 import { normalize, type PageText } from '../domain/search'
 import { changeSetSize, describeStorageError, emptyChangeSet, type ChangeSet, type Repository } from '../storage/repository'
@@ -1198,8 +1199,8 @@ export class WorkspaceStore {
     for (const [pageId, objects] of byPage) {
       const sorted = [...objects].sort((a, b) => a.y - b.y || a.x - b.x)
       const text = sorted
-        .filter((o) => o.type === 'text')
-        .map((o) => docToPlainText(o.doc))
+        .flatMap((o) => (o.type === 'text' ? [docToPlainText(o.doc)] : o.markup ? [markupText(o.markup)] : []))
+        .filter(Boolean)
         .join('\n')
       const attachmentIds = sorted.filter((o) => o.type === 'image').map((o) => o.attachmentId)
       texts.set(pageId, { text, attachmentIds })

@@ -12,6 +12,7 @@ import {
   type RichTextDoc,
   type RichTextNode,
   type Section,
+  type SketchObject,
   type Tag,
   type Task,
   type Template,
@@ -69,7 +70,7 @@ export interface LatestRecords {
 
 export type RecoveredItem =
   | { type: 'text'; source: string; reason: string; doc: RichTextDoc }
-  | { type: 'image'; source: string; reason: string; image: ImageObject }
+  | { type: 'image'; source: string; reason: string; image: ImageObject | SketchObject }
   | { type: 'note'; source: string; reason: string; detail: string }
 
 export interface ReconcileResult {
@@ -362,7 +363,7 @@ export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRe
     if (h.kind === 'objects' && (rec as CanvasObject).type === 'text') {
       recovered.push({ type: 'text', source: sourceOf(h), reason, doc: (rec as TextObject).doc })
     } else if (h.kind === 'objects') {
-      recovered.push({ type: 'image', source: sourceOf(h), reason, image: rec as ImageObject })
+      recovered.push({ type: 'image', source: sourceOf(h), reason, image: rec as ImageObject | SketchObject })
     } else {
       const fields = h.base
         ? Object.keys(FIELD_LABELS).filter((f) => !sameValue((h.base as never)[f], (rec as never)[f]) && f in (rec as object))
@@ -442,6 +443,8 @@ export function reconcileHeldChanges(heldChanges: HeldChange[], latest: LatestRe
       if (conflicts.length > 0) {
         if (kind === 'objects' && conflicts.includes('doc')) {
           recovered.push({ type: 'text', source: sourceOf(h), reason: 'This text was also changed in the other window; that version was kept.', doc: (h.mine as TextObject).doc })
+        } else if (kind === 'objects' && conflicts.includes('markup')) {
+          recovered.push({ type: 'image', source: sourceOf(h), reason: 'This markup was also changed in the other window; that version was kept. This window’s version is below.', image: h.mine as ImageObject | SketchObject })
         } else {
           const detail = conflicts
             .map((f) => `${FIELD_LABELS[f] ?? f}: this window had ${fieldText(kind, f, (h.mine as never)[f], latest)}; kept ${fieldText(kind, f, (theirs as never)[f], latest)}`)

@@ -4,7 +4,8 @@ import { MIN_IMAGE_SIZE, MIN_TEXT_WIDTH, clampRect } from '../../domain/geometry
 import { pageLinkState } from '../../domain/pageLink'
 import type { CanvasObject } from '../../domain/types'
 import { useWorkspace } from '../../app/context'
-import { IconBack, IconDuplicate, IconFront, IconImage, IconLink, IconRedo, IconText, IconTrash, IconUndo } from '../icons'
+import { IconBack, IconDuplicate, IconFront, IconImage, IconLink, IconPencil, IconRedo, IconText, IconTrash, IconUndo } from '../icons'
+import { hasMarkup } from '../../domain/markup'
 import { pageLinkAt, pageLinkRange } from './pageLinkUi'
 
 interface Props {
@@ -15,6 +16,10 @@ interface Props {
   onRedo: () => void
   onAddText: () => void
   onAddImage: () => void
+  onAddSketch: () => void
+  /** Open the markup editor for the selected image or sketch. */
+  onMarkup: () => void
+  onSavePng: () => void
   editor: Editor | null
   selected: CanvasObject | null
   pageWidth: number
@@ -275,6 +280,9 @@ export function Toolbar(props: Props) {
         <ToolButton label="Insert image from a file" disabled={readOnly} onClick={props.onAddImage} wide>
           <IconImage /> <span>Image</span>
         </ToolButton>
+        <ToolButton label="Add a sketch (lines, arrows, shapes, labels, pen)" disabled={readOnly} onClick={props.onAddSketch} wide>
+          <IconPencil /> <span>Sketch</span>
+        </ToolButton>
       </div>
       <FormatTools editor={isText ? props.editor : null} disabled={readOnly} onPageLink={props.onPageLink} />
       {isText && props.editor && (
@@ -283,6 +291,22 @@ export function Toolbar(props: Props) {
         <div className="context-bar">
           {!readOnly && <TableTools editor={props.editor} />}
           <LinkTools editor={props.editor} readOnly={readOnly} onFollow={props.onFollowLink} />
+        </div>
+      )}
+      {selected && selected.type !== 'text' && (
+        <div className="context-bar">
+          <div className="tool-group markup-context" role="group" aria-label={selected.type === 'sketch' ? 'Sketch' : 'Image markup'}>
+            {!readOnly && (
+              <ToolButton label={selected.type === 'sketch' ? 'Edit sketch (Enter or double-click)' : 'Mark up: arrows, shapes, labels, pen, highlighter, crop, blur, redact (Enter or double-click)'} onClick={props.onMarkup} wide>
+                <IconPencil size={14} /> {selected.type === 'sketch' ? 'Edit sketch' : 'Mark up'}
+              </ToolButton>
+            )}
+            {(selected.type === 'sketch' || hasMarkup(selected.markup)) && (
+              <ToolButton label="Save a flattened PNG copy (redacted areas become solid black; the original is kept)" onClick={props.onSavePng} wide>
+                Save PNG copy
+              </ToolButton>
+            )}
+          </div>
         </div>
       )}
       {!readOnly && (

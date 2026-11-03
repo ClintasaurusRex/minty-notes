@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type DragEvent, type MouseEve
 import { useServices, useWorkspace } from '../../app/context'
 import { fitImageSize, fitScale, pageHeight, PAGE_MARGIN } from '../../domain/geometry'
 import { docFromHtml, docFromPlainText, emptyDoc, isDocEmpty } from '../../domain/richtext'
-import { newId, nowIso, type AttachmentMeta, type CanvasObject, type ImageObject, type Page, type RichTextDoc, type TextObject } from '../../domain/types'
+import { newId, nowIso, type AttachmentMeta, type CanvasObject, type ImageObject, type Page, type RichTextDoc, type SketchObject, type TextObject } from '../../domain/types'
 import { describeStorageError } from '../../storage/repository'
 import { ReadOnlyError } from '../../store/workspaceStore'
 import { useNav } from '../nav'
@@ -13,12 +13,21 @@ import { PageLinkPicker } from './PageLinkPicker'
 import { pageLinkStatusKey } from './pageLinkUi'
 import { DEFAULT_TEXT_WIDTH, NEW_TEXT_HEIGHT, imageFilesFrom, minZ, nextZ, placeNew, prepareImage } from './canvasActions'
 import { ImageBox } from './ImageBox'
+import { savePngCopy } from './markupExport'
+import { MarkupHost } from './MarkupHost'
+import { SketchBox } from './SketchBox'
+import { emptyMarkup } from '../../domain/markup'
 import { PageHeader } from './PageHeader'
 import { TextBox } from './TextBox'
 import { Toolbar } from './Toolbar'
 
 function isTypingTarget(el: EventTarget | null): boolean {
   return el instanceof HTMLElement && !!el.closest('input, textarea, select, [contenteditable="true"]')
+}
+
+/** A modal dialog (markup editor, page picker, task editor…) owns the keyboard and clipboard. */
+function modalOpen(): boolean {
+  return !!document.querySelector('dialog[open]')
 }
 
 /** Re-draws page-link states (title, Trash, deleted) in open editors whenever pages change. */
@@ -58,6 +67,8 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
   const [pageEl, setPageEl] = useState<HTMLDivElement | null>(null)
   const [availableWidth, setAvailableWidth] = useState(0)
   const [linkRequest, setLinkRequest] = useState<LinkRequest | null>(null)
+  /** Image or sketch open in the markup editor; `fresh` sketches are removed if left empty. */
+  const [markupFor, setMarkupFor] = useState<{ id: string; fresh: boolean } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   /** Text boxes created in this view; removed again if left empty. */
   const freshIds = useRef(new Set<string>())
@@ -138,6 +149,18 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
       setFocusRequest({ id: obj.id, seq: Date.now() })
     })
 
+  const addSketch = () =>
+    guard(() => {
+      const all = currentObjects()
+      const anchor = selectedId ? (store.getObject(pageId, selectedId) ?? null) : null
+      const rect = placeNew({ w: Math.min(640, pageWidth - 2 * PAGE_MARGIN), h: 400 }, { objects: all, pageWidth, anchor, viewportTop: viewportTop() })
+      const ts = nowIso()
+      const obj: SketchObject = { id: newId(), pageId, type: 'sketch', ...rect, z: nextZ(all), markup: emptyMarkup(rect.w, rect.h), createdAt: ts, updatedAt: ts }
+      store.addObjects(pageId, [obj], 'Add sketch')
+      setSelectedId(obj.id)
+      setMarkupFor({ id: obj.id, fresh: true })
+    })
+
   const insertImages = async (files: Blob[], source: AttachmentMeta['source'], at?: { x: number; y: number }, anchorId?: string | null) => {
     if (readOnly) return notify('info', 'This window is read-only.')
     const created: ImageObject[] = []
@@ -178,7 +201,7 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
   // Paste outside a text box: images become image objects; text becomes a new text box.
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
-      if (event.defaultPrevented || readOnly) return
+      if (event.defaultPrevented || readOnly || modalOpen()) return
       const images = imageFilesFrom(event.clipboardData)
       const text = event.clipboardData?.getData('text/plain') ?? ''
       const html = event.clipboardData?.getData('text/html') ?? ''
@@ -212,7 +235,7 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (readOnly || isTypingTarget(e.target)) return
+      if (readOnly || isTypingTarget(e.target) || modalOpen()) return
       const mod = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
       if (mod && !e.altKey && key === 'z') {
@@ -282,6 +305,27 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
       setLinkRequest({ editorId, ...range, restore, query: range.from === range.to ? '' : editor.state.doc.textBetween(range.from, range.to, ' ').slice(0, 80) })
     },
     followPageLink: (id) => nav.followPageLink(id),
+    openMarkup: (id) => {
+      if (readOnly) return notify('info', 'This window is read-only, so markup cannot be changed here.')
+      const o = store.getObject(pageId, id)
+      if (o && o.type !== 'text') setMarkupFor({ id, fresh: false })
+    },
+  }
+
+  const markupObj = markupFor ? store.getObject(pageId, markupFor.id) : undefined
+  const closeMarkup = (patch: Partial<CanvasObject> | null) => {
+    const target = markupFor
+    setMarkupFor(null)
+    if (!target) return
+    const obj = store.getObject(pageId, target.id)
+    if (!obj || obj.type === 'text') return
+    guard(() => {
+      if (patch) store.updateObjects(pageId, [{ id: obj.id, patch }], obj.type === 'sketch' ? 'Edit sketch' : 'Mark up image')
+      // A new sketch left empty is removed, like an empty new text box.
+      const now = store.getObject(pageId, obj.id)
+      if (target.fresh && now?.type === 'sketch' && now.markup.items.length === 0) store.discardObject(pageId, obj.id)
+    })
+    focusObject(obj.id)
   }
 
   const closeLinkPicker = (pageToLink: Page | null) => {
@@ -342,6 +386,7 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
       <div className="page-view">
         <PageHeader page={page as Page} projectId={projectId} onLeave={onLeave} zoom={zoom} scale={scale} onZoom={setZoom} />
         <PageLinkRefresher editors={editors} />
+        {markupObj && markupObj.type !== 'text' && <MarkupHost key={markupObj.id} obj={markupObj} pageWidth={pageWidth} onDone={(patch) => closeMarkup(patch)} onCancel={() => closeMarkup(null)} />}
         {linkRequest && <PageLinkPicker currentPageId={pageId} initialQuery={linkRequest.query} onChoose={(p) => closeLinkPicker(p)} onCancel={() => closeLinkPicker(null)} />}
         <Toolbar
           readOnly={readOnly}
@@ -351,6 +396,13 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
           onRedo={redo}
           onAddText={() => addTextBox()}
           onAddImage={() => fileInput.current?.click()}
+          onAddSketch={addSketch}
+          onMarkup={() => selected && selected.type !== 'text' && api.openMarkup(selected.id)}
+          onSavePng={() => {
+            if (!selected || selected.type === 'text') return
+            const name = selected.type === 'image' ? (store.getState().data.attachments[selected.attachmentId]?.fileName ?? 'image') : 'Sketch'
+            void savePngCopy(selected, (id) => store.getBlob(id), name)
+          }}
           editor={activeEditor}
           selected={selected}
           pageWidth={pageWidth}
@@ -394,7 +446,7 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
                 onDragOver={onDragOver}
                 onDrop={onDrop}
               >
-                {list.map((o) => (o.type === 'text' ? <TextBox key={o.id} obj={o} /> : <ImageBox key={o.id} obj={o} />))}
+                {list.map((o) => (o.type === 'text' ? <TextBox key={o.id} obj={o} /> : o.type === 'sketch' ? <SketchBox key={o.id} obj={o} /> : <ImageBox key={o.id} obj={o} />))}
                 {list.length === 0 && (
                   <div className="page-empty" aria-hidden="true">
                     <p>Double-click anywhere to write, or use “Text”.</p>
