@@ -76,6 +76,8 @@ const EXTENSIONS: Record<string, string> = {
   'image/bmp': '.bmp',
   'image/avif': '.avif',
   'image/svg+xml': '.svg',
+  'application/pdf': '.pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
 }
 
 function attachmentPath(meta: AttachmentMeta): string {
@@ -115,7 +117,8 @@ export async function buildArchive(records: WorkspaceRecords, blobs: Map<string,
     encoder.encode(
       `Minty Notes full workspace backup\nCreated: ${manifest.createdAt}\n\n` +
         `Restore it from Minty Notes → Settings → Restore. records.json holds projects, tasks, templates,\n` +
-        `categories, tags, notes, notebooks, sections, links, and page layout. attachments/ holds the original image files.\n` +
+        `categories, tags, notes, notebooks, sections, links, and page layout. attachments/ holds the original image files\n` +
+        `and the original files of imported documents (unchanged).\n` +
         `This is a complete working copy, not a redacted document for sharing.\n`,
     ),
     { level: 6 },
@@ -313,6 +316,7 @@ function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
   })
   const projectIds = idsOf(projects)
 
+  const importedOriginals: { title: string; attachmentId: string }[] = []
   pages.forEach((p, i) => {
     if (!checkCommon(c, 'Page', p, i)) return
     const loc = p.location
@@ -324,6 +328,11 @@ function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
     if (!c.require(isStr(p.title) && isNum(p.order) && isNum(p.width) && p.width > 0 && locOk && fromOk && isIdList(p.tagIds) && (p.trashedAt === null || isTime(p.trashedAt)), `Page #${i + 1} is invalid.`)) return
     if (!checkCategories('Page', p.title, p.categoryIds)) return
     unique('page', p.id as string)
+    if (p.importedFrom !== undefined) {
+      const f = p.importedFrom
+      const ok = isObj(f) && isId(f.attachmentId) && isStr(f.fileName) && f.fileName.length <= 1000 && (f.format === 'docx' || f.format === 'pdf') && isTime(f.importedAt) && Array.isArray(f.notes) && f.notes.length <= 100 && f.notes.every((n) => isStr(n) && n.length <= 2000)
+      if (c.require(ok, `Page “${p.title}” has invalid import details.`)) importedOriginals.push({ title: String(p.title), attachmentId: (f as Obj).attachmentId as string })
+    }
     if ((loc as Obj).kind === 'section') c.require(sectionIds.has((loc as Obj).sectionId), `Page “${p.title}” refers to a missing section.`)
     if ((loc as Obj).kind === 'project') c.require(projectIds.has((loc as Obj).projectId), `Page “${p.title}” refers to a missing project.`)
     for (const id of p.tagIds as string[]) c.require(tagIds.has(id), `Page “${p.title}” refers to a missing tag.`)
@@ -337,6 +346,7 @@ function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
     if (c.require(isStr(o.fileName) && isStr(o.mimeType) && isNum(o.size) && isStr(o.sha256), `Attachment #${i + 1} is invalid.`)) unique('attachment', o.id as string)
   })
   const attachmentIds = idsOf(attachments)
+  for (const o of importedOriginals) c.require(attachmentIds.has(o.attachmentId), `The original file of imported page “${o.title}” is missing.`)
 
   const tasks = r.tasks as unknown[]
   tasks.forEach((t, i) => {
@@ -600,6 +610,7 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
 
   const referenced = new Set(records.objects.filter((o): o is Extract<CanvasObject, { type: 'image' }> => o.type === 'image').map((o) => o.attachmentId))
   for (const t of records.templates) for (const id of templateAttachmentIds(t)) referenced.add(id)
+  for (const p of records.pages) if (p.importedFrom) referenced.add(p.importedFrom.attachmentId)
   const unused = records.attachments.filter((a) => !referenced.has(a.id)).length
   if (unused > 0) warnings.push(`${unused} stored image${unused === 1 ? ' is' : 's are'} not placed on any page (kept for completeness).`)
 

@@ -333,14 +333,16 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
     setLinkRequest(null)
     const editor = req ? editors[req.editorId] : undefined
     if (!req || !editor || editor.isDestroyed) return
-    const chain = editor.chain().focus()
+    // The picker has already closed its dialog (and the browser has returned
+    // focus to the text), so the selection restored here is the one that stays.
+    const chain = editor.chain().focus().setTextSelection({ from: req.from, to: req.to })
     if (!pageToLink) {
-      if (req.restore) chain.insertContentAt(req.from, req.restore).run()
-      else chain.setTextSelection({ from: req.from, to: req.to }).run()
+      if (req.restore) chain.insertContentAt(req.from, req.restore)
+      chain.run()
       return
     }
     const mark = { type: 'pageLink', attrs: { pageId: pageToLink.id } }
-    if (req.from !== req.to) chain.setTextSelection({ from: req.from, to: req.to }).setMark('pageLink', mark.attrs).setTextSelection(req.to).run()
+    if (req.from !== req.to) chain.setMark('pageLink', mark.attrs).setTextSelection(req.to).run()
     else chain.insertContentAt(req.from, { type: 'text', text: pageToLink.title || 'Untitled page', marks: [mark] }).run()
   }
 

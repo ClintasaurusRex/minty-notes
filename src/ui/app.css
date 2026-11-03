@@ -837,10 +837,10 @@ button.pill {
 }
 /* Tables size to their text box; wide tables scroll inside it. */
 .rt .tableWrapper {
-  margin: 0.4em 0;
   overflow-x: auto;
 }
 .rt table {
+  margin: 0.4em 0;
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
@@ -2298,4 +2298,66 @@ a.btn {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+/* ---------- imported documents ---------- */
+.share-banner.is-import {
+  flex-wrap: wrap;
+}
+.badge-import {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.import-notes {
+  flex-basis: 100%;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.import-notes summary {
+  cursor: pointer;
+  color: var(--text);
+}
+.import-notes ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.preview-dialog {
+  width: min(1000px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+}
+.preview-dialog[open] {
+  display: flex;
+}
+.preview-body {
+  min-height: 200px;
+  overflow: auto;
+}
+.preview-nav {
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.preview-canvas-box {
+  display: flex;
+  justify-content: center;
+}
+.preview-canvas {
+  background: #fff;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+}
+.preview-pdf:focus-visible {
+  outline: 2px solid var(--mint-line);
+}
+.preview-docx {
+  padding: 16px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--page);
+}
+.preview-docx .preview-img {
+  max-width: 100%;
+  height: auto;
 }

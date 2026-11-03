@@ -75,6 +75,17 @@ export interface CopiedFrom {
   at: Timestamp
 }
 
+/** The original file behind an imported draft (format 4). */
+export interface ImportedFrom {
+  /** The original file, stored unchanged as an attachment (also in backups). */
+  attachmentId: string
+  fileName: string
+  format: 'docx' | 'pdf'
+  importedAt: Timestamp
+  /** What could not be converted (shown with the draft). */
+  notes: string[]
+}
+
 export interface Page {
   id: string
   title: string
@@ -91,6 +102,8 @@ export interface Page {
   updatedAt: Timestamp
   /** Set when the page is in the trash; null otherwise. */
   trashedAt: Timestamp | null
+  /** Set on an editable draft made from an imported document (format 4; absent otherwise). */
+  importedFrom?: ImportedFrom
 }
 
 /** A system category such as VTScada or Studio 5000. Drives reference suggestions. */
@@ -250,7 +263,8 @@ export interface AttachmentMeta {
   /** Natural pixel size for images. */
   width: number | null
   height: number | null
-  source: 'paste' | 'file' | 'drop'
+  /** 'import': an imported original document or an image taken from one (format 4). */
+  source: 'paste' | 'file' | 'drop' | 'import'
   createdAt: Timestamp
 }
 

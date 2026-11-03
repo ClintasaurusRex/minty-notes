@@ -46,9 +46,16 @@ export function PageLinkPicker({ currentPageId, initialQuery, onChoose, onCancel
     .slice(0, MAX_RESULTS)
   const current = Math.min(active, Math.max(0, results.length - 1))
 
+  // Close the dialog before reporting back: closing returns focus to the text
+  // box, and the caller then restores the selection on top of that.
+  const finish = (fn: () => void) => {
+    if (dialog.current?.open) dialog.current.close()
+    fn()
+  }
+  const cancel = () => finish(onCancel)
   const choose = (i: number) => {
     const hit = results[i]
-    if (hit) onChoose(hit.page)
+    if (hit) finish(() => onChoose(hit.page))
   }
 
   return (
@@ -59,9 +66,9 @@ export function PageLinkPicker({ currentPageId, initialQuery, onChoose, onCancel
       data-testid="page-link-picker"
       onCancel={(e) => {
         e.preventDefault()
-        onCancel()
+        cancel()
       }}
-      onMouseDown={(e) => e.target === e.currentTarget && onCancel()}
+      onMouseDown={(e) => e.target === e.currentTarget && cancel()}
     >
       <h2 id={headingId}>Link to a page</h2>
       <p className="muted small">The link follows the page if it is moved or renamed. Ctrl+click or Alt+Enter on a link opens it.</p>
@@ -94,7 +101,7 @@ export function PageLinkPicker({ currentPageId, initialQuery, onChoose, onCancel
           } else if (e.key === 'Escape') {
             // One Esc always closes (a search field would otherwise just clear itself).
             e.preventDefault()
-            onCancel()
+            cancel()
           }
         }}
       />
@@ -117,7 +124,7 @@ export function PageLinkPicker({ currentPageId, initialQuery, onChoose, onCancel
         {results.length === 0 && <li className="muted small picker-empty">No matching pages.</li>}
       </ul>
       <div className="dialog-actions">
-        <button type="button" className="btn" onClick={onCancel}>
+        <button type="button" className="btn" onClick={cancel}>
           Cancel
         </button>
         <button type="button" className="btn btn-primary" disabled={!results[current]} onClick={() => choose(current)}>

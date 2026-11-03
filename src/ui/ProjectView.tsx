@@ -16,6 +16,7 @@ import { useNav, type ProjectTab } from './nav'
 import { notify } from './notices'
 import { safeUrl, STATUS_LABELS } from './projectFormat'
 import { DueBadge, PriorityBadge, TaskBoard } from './TaskBoard'
+import { ImportButton } from './ImportButton'
 import { TemplatePicker } from './Templates'
 
 function guard(fn: () => void) {
@@ -446,6 +447,7 @@ export function ProjectView({ projectId, tab, onTab, openTaskId, onOpenTask }: P
                   label="New from template…"
                   onPick={(t) => guard(() => nav.openPage(store.createPageFromTemplate(t.id, { kind: 'project', projectId: project.id }).id, project.id))}
                 />
+                <ImportButton location={{ kind: 'project', projectId: project.id }} label="Import document…" variant="button" />
                 <button type="button" className="btn btn-small" onClick={() => guard(() => nav.openPage(store.createPage({ kind: 'project', projectId: project.id }).id, project.id))}>
                   <IconPlus size={14} /> New note
                 </button>

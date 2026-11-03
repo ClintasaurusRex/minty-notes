@@ -12,6 +12,10 @@ import { locationKey, locationLabel, parseLocationKey, useLocationOptions } from
 import { useNav } from '../nav'
 import { notify } from '../notices'
 import { ToolButton } from './Toolbar'
+import { OriginalPreview } from './OriginalPreview'
+import { formatLabel } from '../../import/formats'
+import { saveBytesAsDownload } from '../../platform/download'
+import { formatBytes } from '../../platform/storageInfo'
 
 interface Props {
   page: Page
@@ -119,6 +123,49 @@ function TaskBacklinks({ page }: { page: Page }) {
   )
 }
 
+/** An imported draft: where it came from, what did not convert, and the original file. */
+function ImportBanner({ page }: { page: Page }) {
+  const { store } = useServices()
+  const source = page.importedFrom!
+  const meta = useWorkspace((s) => s.data.attachments[source.attachmentId])
+  const [previewing, setPreviewing] = useState(false)
+  const download = async () => {
+    const blob = await store.getBlob(source.attachmentId)
+    if (!blob) return notify('error', 'The original file is missing from this workspace.')
+    saveBytesAsDownload(new Uint8Array(await blob.arrayBuffer()), source.fileName, meta?.mimeType ?? blob.type)
+  }
+  return (
+    <div className="share-banner is-import" role="note" data-testid="import-banner">
+      <span className="badge badge-import">Imported draft</span>
+      <span>
+        From “{source.fileName}” ({formatLabel(source.format)}
+        {meta ? `, ${formatBytes(meta.size)}` : ''}) on {shortDateTime(source.importedAt)}. This is an editable conversion; the original layout is not reproduced exactly. {meta ? 'The original file is kept unchanged.' : 'The original file is missing.'}
+      </span>
+      {meta && (
+        <span className="btn-row">
+          <button type="button" className="btn btn-small" onClick={() => setPreviewing(true)}>
+            Preview original
+          </button>
+          <button type="button" className="btn btn-small btn-ghost" onClick={() => void download()}>
+            Download original
+          </button>
+        </span>
+      )}
+      {source.notes.length > 0 && (
+        <details className="import-notes" data-testid="import-notes">
+          <summary>Conversion notes ({source.notes.length})</summary>
+          <ul>
+            {source.notes.map((n, i) => (
+              <li key={i}>{n}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {previewing && <OriginalPreview source={source} onClose={() => setPreviewing(false)} onDownload={() => void download()} />}
+    </div>
+  )
+}
+
 /**
  * Notes whose text links to this page (internal page links). Read once when the
  * page opens: it scans every stored note, so it is not refreshed on every save.
@@ -209,6 +256,7 @@ export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Pr
           <LabelPicker kind="tag" label="Add tag to this page" selected={page.tagIds} onChange={(ids) => guard(() => store.setPageTags(page.id, ids))} />
         </div>
         <ShareBanner page={page} projectId={projectId} />
+        {page.importedFrom && <ImportBanner page={page} />}
         <TaskBacklinks page={page} />
         <PageBacklinks pages={backlinks} />
       </div>

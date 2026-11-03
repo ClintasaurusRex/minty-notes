@@ -1,7 +1,7 @@
 import { Extension, getMarkRange, InputRule } from '@tiptap/core'
 import type { EditorState } from '@tiptap/pm/state'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
-import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view'
 import type { Node as PMNode } from '@tiptap/pm/model'
 import { PAGE_LINK, type PageLinkState } from '../../domain/pageLink'
 
@@ -46,6 +46,26 @@ export function pageLinkRange(state: EditorState): { from: number; to: number } 
   return getMarkRange(state.selection.$from, type, { pageId: id }) ?? null
 }
 
+/**
+ * The selection as the browser has it right now. A keyboard selection
+ * (e.g. Shift+Home) reaches the editor state asynchronously, so a shortcut
+ * pressed straight after it reads the live DOM selection.
+ */
+function liveRange(view: EditorView): { from: number; to: number } {
+  const dom = view.dom.ownerDocument.getSelection()
+  if (dom && dom.rangeCount > 0 && dom.anchorNode && dom.focusNode && view.dom.contains(dom.anchorNode) && view.dom.contains(dom.focusNode)) {
+    try {
+      const a = view.posAtDOM(dom.anchorNode, dom.anchorOffset)
+      const b = view.posAtDOM(dom.focusNode, dom.focusOffset)
+      return { from: Math.min(a, b), to: Math.max(a, b) }
+    } catch {
+      // Fall back to the editor's own selection.
+    }
+  }
+  const { from, to } = view.state.selection
+  return { from, to }
+}
+
 function fire(el: Element, type: string, detail: unknown): void {
   el.dispatchEvent(new CustomEvent(type, { detail }))
 }
@@ -80,7 +100,7 @@ export const PageLinkUi = Extension.create<PageLinkUiOptions>({
   addKeyboardShortcuts() {
     return {
       'Mod-Shift-k': () => {
-        const { from, to } = this.editor.state.selection
+        const { from, to } = liveRange(this.editor.view)
         fire(this.editor.view.dom, PAGE_LINK_REQUEST, { from, to, restore: '' } satisfies PageLinkRequestDetail)
         return true
       },

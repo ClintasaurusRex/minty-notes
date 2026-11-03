@@ -6,6 +6,7 @@ import type { Page } from '../domain/types'
 import { ReadOnlyError } from '../store/workspaceStore'
 import { shortDateTime } from './format'
 import { IconChevron, IconPencil, IconPin, IconPlus, IconRestore, IconTag, IconTrash } from './icons'
+import { ImportButton } from './ImportButton'
 import { LabelPicker } from './LabelPicker'
 import { useNav, type NavSection, type OpenProjectOptions } from './nav'
 import { notify } from './notices'
@@ -132,9 +133,12 @@ function ProjectsNav({ projectId, pageId, onOpenPage, onOpenProject }: Pick<Prop
         <div className="nav-subhead">
           <span>Notes</span>
           {!readOnly && !project.trashedAt && (
-            <button type="button" className="icon-btn small" aria-label="New project note" title="New project note" onClick={() => guard(() => onOpenPage(store.createPage({ kind: 'project', projectId: project.id }).id, project.id))}>
-              <IconPlus size={14} />
-            </button>
+            <span className="row-actions always">
+              <button type="button" className="icon-btn small" aria-label="New project note" title="New project note" onClick={() => guard(() => onOpenPage(store.createPage({ kind: 'project', projectId: project.id }).id, project.id))}>
+                <IconPlus size={14} />
+              </button>
+              <ImportButton location={{ kind: 'project', projectId: project.id }} label="Import document into this project" />
+            </span>
           )}
         </div>
         <ul className="nav-list">
@@ -261,6 +265,7 @@ export function Navigator({ section, pageId, projectId, onOpenPage, onOpenProjec
               <IconPlus />
             </button>
           )}
+          <ImportButton location={{ kind: inbox ? 'inbox' : 'standalone' }} label={inbox ? 'Import document' : 'Import document as a standalone note'} />
         </div>
         <p className="nav-hint">{inbox ? 'Quick captures land here. Move them into a notebook or keep them as standalone notes.' : 'Notes kept on their own, outside any notebook.'}</p>
         {list.length === 0 ? (
@@ -478,6 +483,7 @@ export function Navigator({ section, pageId, projectId, onOpenPage, onOpenProjec
                               >
                                 <IconPlus size={14} />
                               </button>
+                              <ImportButton location={{ kind: 'section', sectionId: sec.id }} label={`Import document into ${sec.title}`} />
                               <button type="button" className="icon-btn small" aria-label={`Rename ${sec.title}`} title="Rename" onClick={() => setRenaming(sec.id)}>
                                 <IconPencil size={14} />
                               </button>

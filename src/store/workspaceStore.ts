@@ -15,6 +15,9 @@ import {
   type Task,
   type TaskStatus,
   type Template,
+  type ImportedFrom,
+  type ImageObject,
+  type TextObject,
   type WorkspaceInfo,
   type WorkspaceRecords,
 } from '../domain/types'
@@ -1202,7 +1205,9 @@ export class WorkspaceStore {
         .flatMap((o) => (o.type === 'text' ? [docToPlainText(o.doc)] : o.markup ? [markupText(o.markup)] : []))
         .filter(Boolean)
         .join('\n')
-      const attachmentIds = sorted.filter((o) => o.type === 'image').map((o) => o.attachmentId)
+      const attachmentIds = sorted.flatMap((o) => (o.type === 'image' ? [o.attachmentId] : []))
+      const original = this.state.data.pages[pageId]?.importedFrom?.attachmentId
+      if (original) attachmentIds.unshift(original)
       texts.set(pageId, { text, attachmentIds })
     }
     return texts
@@ -1441,6 +1446,45 @@ export class WorkspaceStore {
     }
   }
 
+  // ------------------------------------------------------ document import
+
+  /**
+   * Store an imported document: the original file and any pictures are saved
+   * first (unchanged bytes), then a new page with the editable draft. The page
+   * remembers its original (`importedFrom`), so the file is never discarded.
+   */
+  async createImportedPage(
+    location: PageLocation,
+    input: { title: string; importedFrom: Omit<ImportedFrom, 'importedAt'>; files: { meta: AttachmentMeta; blob: Blob }[]; objects: ImportedObject[] },
+  ): Promise<Page> {
+    this.assertWritable()
+    if (!input.files.some((f) => f.meta.id === input.importedFrom.attachmentId)) throw new Error('The original file is missing from the import.')
+    for (const f of input.files) await this.addAttachment(f.meta, f.blob)
+    this.assertWritable()
+    this.commitTextSession()
+    const at = nowIso()
+    const siblings = Object.values(this.state.data.pages).filter((p) => sameLocation(p.location, location))
+    const page: Page = {
+      id: newId(),
+      title: input.title.trim() || 'Imported document',
+      location,
+      order: this.nextOrder(siblings),
+      width: PAGE_WIDTH,
+      categoryIds: [],
+      tagIds: [],
+      copiedFrom: null,
+      createdAt: at,
+      updatedAt: at,
+      trashedAt: null,
+      importedFrom: { ...input.importedFrom, importedAt: at },
+    }
+    const objects: CanvasObject[] = input.objects.map((o, i) => ({ ...o, id: newId(), pageId: page.id, z: i + 1, createdAt: at, updatedAt: at }) as CanvasObject)
+    this.setData({ pages: { ...this.state.data.pages, [page.id]: page }, objects: { ...this.state.data.objects, [page.id]: byId(objects) } })
+    this.markDirty('pages', page.id, page)
+    for (const o of objects) this.markDirty('objects', o.id, o)
+    return page
+  }
+
   // ----------------------------------------------------------- attachments
 
   /** Store attachment bytes first; only then may an object reference it. */
@@ -1454,6 +1498,9 @@ export class WorkspaceStore {
     return this.repo.getBlob(id)
   }
 }
+
+/** An object of an imported draft, before it gets its ID and page. */
+export type ImportedObject = Omit<TextObject, 'id' | 'pageId' | 'z' | 'createdAt' | 'updatedAt'> | Omit<ImageObject, 'id' | 'pageId' | 'z' | 'createdAt' | 'updatedAt'>
 
 export function sameLocation(a: PageLocation, b: PageLocation): boolean {
   if (a.kind !== b.kind) return false
