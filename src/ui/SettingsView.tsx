@@ -343,9 +343,23 @@ export function SettingsView() {
           <dt>Alt+Arrows</dt>
           <dd>Resize the selected object</dd>
           <dt>Enter</dt>
-          <dd>Edit the selected text box</dd>
+          <dd>Edit the selected text box; mark up the selected image or sketch</dd>
           <dt>Ctrl+D / Delete</dt>
           <dd>Duplicate / delete the selected object</dd>
+          <dt>Tab / Shift+Tab (in a table)</dt>
+          <dd>Next / previous cell (Tab in the last cell adds a row)</dd>
+          <dt>Ctrl+Alt+C / Ctrl+E</dt>
+          <dd>Code block / inline code</dd>
+          <dt>[[ or Ctrl+Shift+K</dt>
+          <dd>Link to a page</dd>
+          <dt>Ctrl+click / Alt+Enter</dt>
+          <dd>Open the linked page (a plain click in a read-only window)</dd>
+          <dt>Alt+F10</dt>
+          <dd>From text to the page toolbar (Esc returns)</dd>
+          <dt>Markup: V A L R E T P H B X C</dt>
+          <dd>Select, arrow, line, rectangle, ellipse, text, pen, highlighter, blur, redact, crop</dd>
+          <dt>Markup: Enter / Tab / arrows</dt>
+          <dd>Add one in the middle / select the next / move (Alt: resize)</dd>
         </dl>
       </section>
 

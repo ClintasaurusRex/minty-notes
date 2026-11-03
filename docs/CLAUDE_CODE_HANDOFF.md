@@ -64,6 +64,8 @@ Start a fresh build conversation at a clean milestone boundary once changes have
 
 **Conversation:** Start fresh after Stage 3 is complete and saved. Keep each feature slice and its fixes together. If this three-slice run becomes crowded, finish a slice, save its handoff, and start fresh for the next slice rather than abandoning an unexplained partial change.
 
+**Status (November 3, 2026):** Stage 4 slices 1–3 (tables/code/internal links; image markup and sketches; local DOCX and text-PDF import) are complete as app 0.4.0 on branch `claude/elegant-cori-894emg` (data format 4, IndexedDB 5), with automated and real-Chromium checks. No real-Chrome manual checks have been done for Stages 2–4 yet; `PROGRESS.md` lists them all. Do those (with a backup first) before starting the PDF/portability checkpoint below, and start it from the branch that contains this work.
+
 > Continue Stage 4 in small checked slices: rich text/tables/code/internal links; image markup and simple sketches; local DOCX and text-based PDF import with preserved originals and editable conversion drafts. Complete each slice in a runnable state before continuing. Include arrows, shapes, labels, pen/highlighter, crop, and well-defined blur/redaction behavior. Do not add OCR or handwriting recognition. Verify malformed-file handling and sanitize imported rich content. Update progress notes and stop after these three slices; PDF and portable project export are the next separate checkpoint. Do not deploy.
 
 ### PDF and project portability

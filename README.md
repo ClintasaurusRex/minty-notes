@@ -2,7 +2,7 @@
 
 A local-first notebook for technical projects and reusable knowledge, in the Minty charcoal-and-mint style. Notes, layouts, and screenshots stay in your browser on your computer — no account, server, or subscription.
 
-**Status:** Stages 0–3 — a working notebook with reliable local saving, backups, and offline use; projects, a reusable reference library, tags, search, and a home dashboard; and task boards, a combined task list, task-to-note links, a project Files tab, and reusable templates. Document import, drawing tools, and PDF export come in Stage 4. See `docs/PROGRESS.md`.
+**Status:** Stages 0–3 and the first three Stage 4 slices — a working notebook with reliable local saving, backups, and offline use; projects, a reusable reference library, tags, search, and a home dashboard; task boards, task-to-note links, a project Files tab, and templates; and (0.4.0) tables, code blocks, internal page links, screenshot markup and sketches, and local DOCX/PDF import. Note-to-PDF export and portable project export/import are the next checkpoint. See `docs/PROGRESS.md`.
 
 ## What it does now
 
@@ -18,10 +18,13 @@ A local-first notebook for technical projects and reusable knowledge, in the Min
 - **Organize:** standalone notes, or notebooks → sections → pages. Move pages anytime; links and IDs stay the same. Trash with restore.
 - **Freeform pages:** a 1,200 px page that grows downward. Add text boxes (double-click the page or “Text”) and images anywhere; move, resize, layer, duplicate.
 - **Screenshots:** take a screenshot, click the page, press **Ctrl+V**. Images can also be dropped in or picked from a file.
-- **Rich text:** headings, bold/italic/underline/strike, code, lists, quotes, links.
+- **Rich text:** headings, bold/italic/underline/strike, inline code and code blocks, lists, quotes, web links, and **tables** (Tab between cells; row/column controls appear while you are in a table).
+- **Page links:** type `[[` (or Ctrl+Shift+K, or the link button) to link to another page. Ctrl+click or Alt+Enter follows a link; “← Back” returns. Links follow moved or renamed pages, show when the page is in the Trash, and stay readable (marked “deleted”) if it is deleted forever. Pages show which notes link to them.
+- **Screenshot markup and sketches:** select an image and choose **Mark up** (or press Enter / double-click): arrows, lines, rectangles, ellipses, labels, pen, highlighter, crop, blur, and redaction boxes, all editable later. **Sketch** adds a vector drawing for simple wiring diagrams. The original image file never changes. **Blur is visual only and a redaction box only covers the area on screen — the original pixels stay in this workspace and its backups.** “Save PNG copy” downloads a flattened image in which redacted areas are solid black.
+- **Import documents:** “Import document” (Inbox, notes, notebook sections, projects) turns a .docx or text-based PDF into an editable draft and keeps the original file unchanged (preview, download, and a list of what did not convert). No OCR: scanned PDFs can only be kept as originals.
 - **Undo/redo:** Ctrl+Z / Ctrl+Shift+Z.
 - **Autosave:** the top bar always says Saved, Saving…, Unsaved changes, or Not saved (with retry).
-- **Backups:** choose a backup folder (Chrome/Edge), or download a backup ZIP. Backups include projects, tasks, templates, links, categories, and tags. Restore checks the whole file first and keeps a safety copy of what it replaces. Older (Stage 1 and Stage 2) backups still restore.
+- **Backups:** choose a backup folder (Chrome/Edge), or download a backup ZIP. Backups include projects, tasks, templates, links, categories, tags, image markup, sketches, and imported original files. Restore checks the whole file first and keeps a safety copy of what it replaces. Older (Stage 1–3) backups still restore. A backup is a complete working copy, not a redacted file for sharing.
 - **Offline:** after the first visit, the app opens without a connection.
 
 Keyboard shortcuts are listed in Settings.
