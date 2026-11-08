@@ -16,6 +16,10 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     viewport: { width: 1440, height: 900 },
     permissions: ['clipboard-read', 'clipboard-write'],
+    // Date fields take keys in the browser's own locale order (Chromium on Linux reads
+    // it from LANG); the tests type US month/day/year, so the browser runs in en-US.
+    locale: 'en-US',
+    launchOptions: { env: { ...process.env, LANG: 'en_US.UTF-8', LANGUAGE: 'en_US:en' } },
     trace: 'retain-on-failure',
   },
   webServer: {

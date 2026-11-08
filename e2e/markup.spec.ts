@@ -235,8 +235,10 @@ test('sketches: keyboard drawing, labels, an empty new sketch is discarded, and 
   await expect(editor).toBeHidden()
   await expect(page.locator('.obj-sketch')).toHaveCount(0)
 
-  // Draw with the keyboard only: line, rectangle, a label.
+  // Draw with the keyboard only: line, rectangle, a label. (Keys go to the drawing
+  // area once the editor has focused it; before that they would reach the title field.)
   await page.getByRole('button', { name: /Add a sketch/ }).click()
+  await expect(page.locator('.markup-stage')).toBeFocused()
   await page.keyboard.press('l')
   await page.keyboard.press('Enter')
   for (let i = 0; i < 3; i++) await page.keyboard.press('Shift+ArrowRight')

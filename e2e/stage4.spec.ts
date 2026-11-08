@@ -76,6 +76,7 @@ test('representative technical project: imported narrative, table, code, page li
   // A small wiring sketch.
   await page.keyboard.press('Escape')
   await page.getByRole('button', { name: /Add a sketch/ }).click()
+  await expect(page.locator('.markup-stage')).toBeFocused()
   await page.keyboard.press('l')
   await page.keyboard.press('Enter')
   await page.keyboard.press('t')
