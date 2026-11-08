@@ -6,13 +6,14 @@ import { saveAsTemplate } from '../actions'
 import type { Page, PageLocation } from '../../domain/types'
 import { ReadOnlyError } from '../../store/workspaceStore'
 import { shortDateTime } from '../format'
-import { IconCopy, IconEyeOff, IconLink, IconPin, IconTrash } from '../icons'
+import { IconCopy, IconDownload, IconEyeOff, IconLink, IconPin, IconTrash } from '../icons'
 import { LabelPicker } from '../LabelPicker'
 import { locationKey, locationLabel, parseLocationKey, useLocationOptions } from '../locations'
 import { useNav } from '../nav'
 import { notify } from '../notices'
 import { ToolButton } from './Toolbar'
 import { OriginalPreview } from './OriginalPreview'
+import { PdfExportDialog } from './PdfExportDialog'
 import { formatLabel, isOriginalOnly, originalOnlyReason } from '../../import/formats'
 import { saveBytesAsDownload } from '../../platform/download'
 import { formatBytes } from '../../platform/storageInfo'
@@ -213,6 +214,7 @@ function PageBacklinks({ pages }: { pages: Page[] }) {
 export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Props) {
   const { store } = useServices()
   const nav = useNav()
+  const [exporting, setExporting] = useState(false)
   const backlinks = usePageBacklinks(page.id)
   const readOnly = useWorkspace((s) => s.readOnly)
   const data = useWorkspace((s) => s.data)
@@ -281,6 +283,10 @@ export function PageHeader({ page, projectId, onLeave, zoom, scale, onZoom }: Pr
             {Math.round(scale * 100)}%
           </span>
         </div>
+        <button type="button" className="btn btn-ghost" title="Export this note as a PDF (with a preview first)" onClick={() => setExporting(true)} data-testid="export-pdf">
+          <IconDownload size={16} /> Export PDF
+        </button>
+        {exporting && <PdfExportDialog page={page} onClose={() => setExporting(false)} />}
         {!readOnly && (
           <>
             <label className="move-select">

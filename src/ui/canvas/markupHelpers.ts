@@ -1,25 +1,8 @@
 import { hasMarkup, sizeAfterCrop, visibleRect } from '../../domain/markup'
 import type { CanvasObject, ImageObject, Markup, SketchObject } from '../../domain/types'
 
-/** Font used for labels, on the page, in the editor, and in PNG copies. */
-export const LABEL_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
-
-/** Background of sketches (the page colour), also used in their PNG copies. */
-export const SKETCH_BACKGROUND = '#141b1a'
-
-let measureCtx: CanvasRenderingContext2D | null = null
-/** Width of a (multi-line) label in markup units. */
-export function measureLabel(text: string, size: number): number {
-  measureCtx ??= document.createElement('canvas').getContext('2d')
-  if (!measureCtx) return text.length * size * 0.58
-  measureCtx.font = `${size}px ${LABEL_FONT}`
-  return Math.max(1, ...text.split('\n').map((line) => measureCtx!.measureText(line).width))
-}
-
-/** Blur strength for a coordinate space (strong enough that small text is not readable on screen). */
-export function blurRadius(m: { width: number; height: number }): number {
-  return Math.max(6, Math.round(Math.min(m.width, m.height) / 110))
-}
+export { blurRadius, LABEL_FONT, SKETCH_BACKGROUND } from '../../domain/markup'
+export { measureLabel } from '../../export/markupRaster'
 
 /** Natural size of an image (falls back to `fallback` when it cannot be decoded). */
 export async function naturalSize(url: string | null, fallback: { width: number; height: number }): Promise<{ width: number; height: number }> {

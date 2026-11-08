@@ -34,6 +34,17 @@ export const MARKUP_COLORS: { name: string; value: string }[] = [
 
 export const REDACT_COLOR = '#000000'
 
+/** Font used for labels, on the page, in the editor, in PNG copies, and in PDF exports. */
+export const LABEL_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
+
+/** Background of sketches (the page colour), also used in their PNG copies and PDF exports. */
+export const SKETCH_BACKGROUND = '#141b1a'
+
+/** Blur strength for a coordinate space (strong enough that small text is not readable on screen). */
+export function blurRadius(m: { width: number; height: number }): number {
+  return Math.max(6, Math.round(Math.min(m.width, m.height) / 110))
+}
+
 export const isColor = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)
 const num = (v: unknown, lo = -MAX_MARKUP_SIZE * 2, hi = MAX_MARKUP_SIZE * 3): v is number => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi
 const isId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200

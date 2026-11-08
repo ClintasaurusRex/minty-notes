@@ -2361,3 +2361,107 @@ a.btn {
   max-width: 100%;
   height: auto;
 }
+
+/* ---------- note PDF export ---------- */
+/* Off-screen copy of the note used to measure it for the PDF: same rich-text
+   CSS as the editor, so the PDF has the same line breaks as the page. */
+.pdf-layout-host {
+  position: absolute;
+  left: -100000px;
+  top: 0;
+  width: 4000px;
+  pointer-events: none;
+  contain: layout style;
+  color: var(--text);
+}
+.pdf-layout-host .obj.pdf-frame {
+  position: relative;
+  left: auto;
+  top: auto;
+  border-color: transparent;
+  box-shadow: none;
+}
+/* The editor's own ProseMirror rules (also present while an editor is open). */
+.pdf-layout-host .ProseMirror {
+  position: relative;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  white-space: break-spaces;
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0;
+}
+.pdf-layout-host .ProseMirror pre {
+  white-space: pre-wrap;
+}
+/* Nothing scrolls in a PDF: wide tables are drawn in full. */
+.pdf-layout-host .rt .tableWrapper,
+.pdf-layout-host .rt pre {
+  overflow: visible;
+}
+/* List markers are real text here (browser markers cannot be measured). */
+.pdf-layout-host .rt li {
+  list-style: none;
+  position: relative;
+}
+.pdf-layout-host .pdf-marker {
+  position: absolute;
+  right: 100%;
+  margin-right: 0.45em;
+  white-space: nowrap;
+  font-weight: 400;
+  font-style: normal;
+  text-decoration: none;
+}
+.pdf-layout-host.pdf-theme-light {
+  --text: #1b2120;
+  --text-2: #3d4946;
+  --text-3: #63706c;
+  --mint: #0b7a5a;
+  --mint-strong: #08664b;
+  --mint-soft: rgba(11, 122, 90, 0.1);
+  --mint-line: rgba(11, 122, 90, 0.55);
+  --raised: #e8eeec;
+  --raised-2: #e1e8e6;
+  --bg: #f2f5f4;
+  --border: #c7d1ce;
+  --border-strong: #9aaba6;
+  --warn: #8a5a00;
+}
+.pdf-title-block {
+  font-family: var(--font);
+  color: var(--text);
+}
+.pdf-title {
+  font-size: 26.6667px; /* 20 pt */
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.pdf-meta {
+  margin-top: 6px;
+  font-size: 12px; /* 9 pt */
+  line-height: 1.35;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.pdf-dialog .pdf-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.pdf-dialog .pdf-options .field {
+  margin: 0;
+}
+.pdf-notes {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.pdf-notes li + li {
+  margin-top: 2px;
+}
+.pdf-status {
+  min-height: 1.4em;
+}

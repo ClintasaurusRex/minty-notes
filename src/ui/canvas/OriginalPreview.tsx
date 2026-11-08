@@ -11,7 +11,7 @@ import { describePdfError, openPdf } from '../../import/pdf'
 type PdfDoc = Awaited<ReturnType<typeof openPdf>>
 
 /** Page images of the original PDF, drawn with PDF.js (no scripts, forms, or annotations are run). */
-function PdfPages({ bytes }: { bytes: Uint8Array }) {
+export function PdfPages({ bytes }: { bytes: Uint8Array }) {
   const [doc, setDoc] = useState<PdfDoc | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pageNo, setPageNo] = useState(1)
