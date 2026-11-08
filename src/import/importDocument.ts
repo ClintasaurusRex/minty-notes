@@ -3,7 +3,7 @@ import { newId, nowIso, type AttachmentMeta, type RichTextDoc } from '../domain/
 import { prepareImage } from '../platform/images'
 import { htmlToBlocks } from './docxBlocks'
 import { convertDocxToHtml, type DocxConversion } from './docxConvert'
-import { checkDocxContainer, detectFormat, MAX_IMPORT_CHARS, MAX_PDF_PAGES, mimeOf, titleFromFileName, type ImportFormat } from './formats'
+import { checkDocxContainer, detectFormat, MAX_IMPORT_CHARS, MAX_PDF_PAGES, mimeOf, notConvertedReason, titleFromFileName, type ImportFormat } from './formats'
 import { describePdfError, extractPdf } from './pdf'
 import { pdfToDocs } from './pdfText'
 
@@ -85,7 +85,7 @@ export async function importDocument(file: File, onProgress?: (message: string) 
     meta: { id: newId(), fileName: name, mimeType: mimeOf(format), size: bytes.byteLength, sha256: await sha256Hex(bytes), width: null, height: null, source: 'import', createdAt: nowIso() },
     blob: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mimeOf(format) }),
   }
-  const failed = (why: string): ImportOutcome => ({ ok: false, reason: `“${name}” could not be converted: ${why}.`, format, title, original })
+  const failed = (why: string): ImportOutcome => ({ ok: false, reason: notConvertedReason(name, why), format, title, original })
 
   if (format === 'docx') {
     onProgress?.(`Converting “${name}”…`)

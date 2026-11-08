@@ -8,7 +8,7 @@ import { newId, nowIso, type AttachmentMeta, type TextObject } from '../domain/t
 import { freshStore } from '../test/fixtures'
 import { makeDocx, makeTechnicalPdf } from '../test/docFixtures'
 import { WorkspaceStore } from '../store/workspaceStore'
-import { checkDocxContainer, detectFormat, DOCX_MIME, MAX_IMPORT_BYTES, PDF_MIME, titleFromFileName } from './formats'
+import { checkDocxContainer, detectFormat, DOCX_MIME, isOriginalOnly, MAX_IMPORT_BYTES, notConvertedReason, originalOnlyReason, PDF_MIME, titleFromFileName } from './formats'
 import { linesOf, pdfToDocs, type PdfRun } from './pdfText'
 
 describe('import format detection and limits', () => {
@@ -160,5 +160,19 @@ describe('imported drafts in the workspace', () => {
     expect(validated.summary.formatVersion).toBe(3)
     expect(validated.records.workspace.formatVersion).toBe(4)
     expect(validated.records.pages[0].importedFrom).toBeUndefined()
+  })
+})
+
+describe('imported originals without a conversion', () => {
+  it('are recognised from their stored note (no new record field)', () => {
+    const reason = notConvertedReason('scanned drawing.pdf', 'it has no selectable text (it may be scanned or made of images). Text recognition (OCR) is not available')
+    const kept = { fileName: 'scanned drawing.pdf', notes: [reason] }
+    expect(isOriginalOnly(kept)).toBe(true)
+    expect(originalOnlyReason(kept)).toBe('it has no selectable text (it may be scanned or made of images). Text recognition (OCR) is not available')
+    // The exact wording written by 0.4.0 is recognised too.
+    expect(isOriginalOnly({ fileName: 'x.pdf', notes: ['“x.pdf” could not be converted: it is password-protected.'] })).toBe(true)
+    // A converted draft is not.
+    expect(isOriginalOnly({ fileName: 'x.pdf', notes: ['Pictures and drawings on page 2 are not converted; see the original.'] })).toBe(false)
+    expect(isOriginalOnly({ fileName: 'x.pdf', notes: [] })).toBe(false)
   })
 })

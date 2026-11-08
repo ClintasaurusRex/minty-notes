@@ -24,6 +24,29 @@ export const MAX_DOCX_IMAGES = 200
 /** Text characters converted (the original keeps everything). */
 export const MAX_IMPORT_CHARS = 2_000_000
 
+/**
+ * Reason given (and stored as the first conversion note) when a real DOCX/PDF
+ * cannot be converted and the user keeps only the original. The same wording
+ * identifies such pages later, so no stored record needs a new field.
+ */
+const NOT_CONVERTED = ' could not be converted: '
+
+export function notConvertedReason(name: string, why: string): string {
+  return `“${name}”${NOT_CONVERTED}${why}.`
+}
+
+/** True for a page that keeps an original file without any editable conversion. */
+export function isOriginalOnly(source: { fileName: string; notes: string[] }): boolean {
+  return source.notes.length > 0 && source.notes[0].startsWith(`“${source.fileName}”${NOT_CONVERTED}`)
+}
+
+/** Why an original-only file was not converted (without the file name), e.g. "it is password-protected". */
+export function originalOnlyReason(source: { fileName: string; notes: string[] }): string {
+  const note = source.notes[0] ?? ''
+  const prefix = `“${source.fileName}”${NOT_CONVERTED}`
+  return (note.startsWith(prefix) ? note.slice(prefix.length) : note).replace(/\.$/, '') || 'it could not be converted'
+}
+
 export function mimeOf(format: ImportFormat): string {
   return format === 'docx' ? DOCX_MIME : PDF_MIME
 }

@@ -13,7 +13,7 @@ import { useNav } from '../nav'
 import { notify } from '../notices'
 import { ToolButton } from './Toolbar'
 import { OriginalPreview } from './OriginalPreview'
-import { formatLabel } from '../../import/formats'
+import { formatLabel, isOriginalOnly, originalOnlyReason } from '../../import/formats'
 import { saveBytesAsDownload } from '../../platform/download'
 import { formatBytes } from '../../platform/storageInfo'
 
@@ -134,13 +134,22 @@ function ImportBanner({ page }: { page: Page }) {
     if (!blob) return notify('error', 'The original file is missing from this workspace.')
     saveBytesAsDownload(new Uint8Array(await blob.arrayBuffer()), source.fileName, meta?.mimeType ?? blob.type)
   }
+  // A file kept without a conversion (scanned PDF, damaged or protected file) is not a draft.
+  const originalOnly = isOriginalOnly(source)
   return (
-    <div className="share-banner is-import" role="note" data-testid="import-banner">
-      <span className="badge badge-import">Imported draft</span>
-      <span>
-        From “{source.fileName}” ({formatLabel(source.format)}
-        {meta ? `, ${formatBytes(meta.size)}` : ''}) on {shortDateTime(source.importedAt)}. This is an editable conversion; the original layout is not reproduced exactly. {meta ? 'The original file is kept unchanged.' : 'The original file is missing.'}
-      </span>
+    <div className={`share-banner is-import${originalOnly ? ' is-original-only' : ''}`} role="note" data-testid="import-banner">
+      <span className="badge badge-import">{originalOnly ? 'Original file only — not converted' : 'Imported draft'}</span>
+      {originalOnly ? (
+        <span>
+          “{source.fileName}” ({formatLabel(source.format)}
+          {meta ? `, ${formatBytes(meta.size)}` : ''}) was kept on {shortDateTime(source.importedAt)} without an editable conversion: {originalOnlyReason(source)}. There is no converted text to edit; the text on this page is only an explanation. {meta ? 'The original file is kept unchanged — open it with Preview original or Download original.' : 'The original file is missing.'}
+        </span>
+      ) : (
+        <span>
+          From “{source.fileName}” ({formatLabel(source.format)}
+          {meta ? `, ${formatBytes(meta.size)}` : ''}) on {shortDateTime(source.importedAt)}. This is an editable conversion; the original layout is not reproduced exactly. {meta ? 'The original file is kept unchanged.' : 'The original file is missing.'}
+        </span>
+      )}
       {meta && (
         <span className="btn-row">
           <button type="button" className="btn btn-small" onClick={() => setPreviewing(true)}>
@@ -151,7 +160,7 @@ function ImportBanner({ page }: { page: Page }) {
           </button>
         </span>
       )}
-      {source.notes.length > 0 && (
+      {source.notes.length > 0 && !originalOnly && (
         <details className="import-notes" data-testid="import-notes">
           <summary>Conversion notes ({source.notes.length})</summary>
           <ul>
