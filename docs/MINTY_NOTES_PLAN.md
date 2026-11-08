@@ -259,6 +259,15 @@ Refine shortcuts, responsive layouts, print/export behavior, performance on real
 
 Evaluate Linux and Windows packaging only after the browser product is stable. Verify offline startup, native folder access, update behavior, and migration from existing browser data. Distribution and signing choices need their own plan.
 
+### Later enhancement ideas (recorded November 7, 2026 — not scheduled)
+
+The user asked to record these for the roadmap without implementing them yet. Each needs its own plan and approval; none is part of Stages 4–6 as written.
+
+- **Minty-Graph:** a visual knowledge graph of pages, projects, and links, and mind maps.
+- **Grouping drawing objects:** group and ungroup annotations in sketches and screenshot markup so they move and resize together.
+- **Reusable technical shapes and symbols:** a user library of custom shapes and symbols for sketches (not validated electrical CAD symbols, which remain separate future work).
+- **Minty Notes User Guide:** a comprehensive, beginner-friendly guide with screenshots and step-by-step workflows.
+
 ## Verification that matters
 
 - Actual Chrome use on the intended work environment.

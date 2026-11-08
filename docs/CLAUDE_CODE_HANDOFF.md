@@ -70,6 +70,8 @@ Start a fresh build conversation at a clean milestone boundary once changes have
 
 ### PDF and project portability
 
+**Status (November 7, 2026):** The user finished manual QA of 0.4.0 on real Chrome (results and open findings in `PROGRESS.md`). **Slice 1 of this checkpoint — note-to-PDF export — is complete as app 0.4.1** on branch `claude/elegant-cori-894emg` (no data-format change: format 4, IndexedDB 5), with unit tests and real-Chromium tests that check the downloaded PDF file itself, including redaction. **Slice 2 — portable project export/import — has not been started and needs the user's approval first**; so does Stage 5. Start Slice 2 from the branch that contains 0.4.1, and do the 0.4.1 manual checks listed in `PROGRESS.md` first.
+
 **Effort:** Extra high (`xhigh`) if available; otherwise High. Pagination, redaction, ID remapping, and complete project recovery warrant deeper reasoning.
 
 **Conversation:** Start fresh once the preceding Stage 4 slices are complete and saved. Keep export/import failures and round-trip verification in this conversation until resolved.
