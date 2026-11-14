@@ -1,78 +1,103 @@
-# React + TypeScript + Vite
+# Minty Notes
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A local-first notebook for technical projects and reusable knowledge, in the Minty charcoal-and-mint style. Notes, layouts, and screenshots stay in your browser on your computer — no account, server, or subscription.
 
-Currently, two official plugins are available:
+**Status:** Stages 0–4 — a working notebook with reliable local saving, backups, and offline use; projects, a reusable reference library, tags, search, and a home dashboard; task boards, task-to-note links, a project Files tab, and templates; (0.4.0) tables, code blocks, internal page links, screenshot markup and sketches, and local DOCX/PDF import; (0.4.1) note-to-PDF export; and (0.4.2) portable project export/import. See `docs/PROGRESS.md`.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## What it does now
 
-## React Compiler
+- **Home:** active projects (with each one's next task), overdue and upcoming tasks, pinned references, recently edited project notes, recently opened pages, and “New from template”.
+- **Quick capture:** “Quick note” (or **Alt+N**) opens a new note in the Inbox. No project or notebook needed.
+- **Projects:** Overview, Tasks, and Files tabs. Customer, site, job number, status, due date, contacts, equipment, software versions, and several system categories. Project notes use the same page editor. Archive, Trash, and restore; deleting a project forever keeps its notes in the Trash and never touches shared library pages.
+- **Tasks:** a To do / Doing / Done board per project. Title, details, priority (Low / Normal / High / Urgent, shown with a label and symbol), and an optional date-only due date with overdue and due-soon markers. Move by drag-and-drop, the arrow buttons, or **Alt+←/→** (column) and **Alt+↑/↓** (order) on a focused task. Link tasks to existing notes (or create a linked note); a note shows which tasks link to it.
+- **All tasks:** the Tasks screen lists tasks across projects with status, priority, due-date, and project filters, sorting, and an “Include archived projects” switch. Click a task to open it on its project's board.
+- **Files tab:** saved local paths (copied with one click; browsers cannot open local folders) and web links such as Dropbox links (http/https only, opened in a new tab), each with a description. Only the location is stored.
+- **Templates:** “Save as template” on a page or a project; “New from template” on Home or in a project. Every use makes new, independent notes, tasks, and projects. Manage templates in Settings.
+- **Reference library:** give a notebook, section, or page a system category (e.g. VTScada). Projects with that category suggest those pages automatically. Pin extra pages or hide suggestions per project. Linked pages are the originals — an edit shows in every project, and the page says it is shared. **Make a project copy** creates an independent page instead.
+- **Tags and search:** tag pages; search project details, note titles and text, task titles and details, tags, categories, and attachment names, with project, category, tag, type, and archived filters. Everything is searched locally.
+- **Organize:** standalone notes, or notebooks → sections → pages. Move pages anytime; links and IDs stay the same. Trash with restore.
+- **Freeform pages:** a 1,200 px page that grows downward. Add text boxes (double-click the page or “Text”) and images anywhere; move, resize, layer, duplicate.
+- **Screenshots:** take a screenshot, click the page, press **Ctrl+V**. Images can also be dropped in or picked from a file.
+- **Rich text:** headings, bold/italic/underline/strike, inline code and code blocks, lists, quotes, web links, and **tables** (Tab between cells; row/column controls appear while you are in a table).
+- **Page links:** type `[[` (or Ctrl+Shift+K, or the link button) to link to another page. Ctrl+click or Alt+Enter follows a link; “← Back” returns. Links follow moved or renamed pages, show when the page is in the Trash, and stay readable (marked “deleted”) if it is deleted forever. Pages show which notes link to them.
+- **Screenshot markup and sketches:** select an image and choose **Mark up** (or press Enter / double-click): arrows, lines, rectangles, ellipses, labels, pen, highlighter, crop, blur, and redaction boxes, all editable later. **Sketch** adds a vector drawing for simple wiring diagrams. The original image file never changes. **Blur is visual only and a redaction box only covers the area on screen — the original pixels stay in this workspace and its backups.** “Save PNG copy” downloads a flattened image in which redacted areas are solid black.
+- **Import documents:** “Import document” (Inbox, notes, notebook sections, projects) turns a .docx or text-based PDF into an editable draft and keeps the original file unchanged (preview, download, and a list of what did not convert). No OCR: scanned PDFs can only be kept as originals.
+- **Export a note as PDF:** “Export PDF” at the top of any note (Inbox, notes, notebooks, projects, imported drafts) shows a preview of the actual PDF file, with Letter/A4, automatic/portrait/landscape, and light or dark colours, then downloads it. Text stays real, selectable text with the same line breaks as on screen; headings, lists, tables, code, links, screenshots, markup, and sketches are included; long notes are split at sensible places and wide notes are scaled to fit (never cut off). **Pictures are flattened: redacted areas are solid black in the PDF and the original image files are not included.** The note itself is never changed, and export works offline and in a read-only window.
+- **Move a project to another computer or a coworker:** open the project and choose **Export project**. You get one file (`minty-project-….zip`) with the project, its notes, tasks, images, imported originals, and copies of the library reference pages it links to; the dialog shows exactly what is and is not included first. Pages you have hidden for the project, and pages that belong to another project, are never put in the file, even when a note links to them — the dialog lists them, and their links arrive as unavailable links. On the other computer: **Projects → Import project**, choose the file, check the summary, confirm. It arrives as a new, independent project next to the existing ones (named “… (imported)” if the name is taken) — nothing there is replaced or changed, and editing it never affects the sender's copy. **A project package is editable data, not a redacted document: it contains the original image files in full, also behind redaction boxes, blur, and crops.** Use “Save PNG copy” or “Export PDF” to share something without the hidden parts. The contents of saved file locations are not included (only the paths and links). A project package is not a backup, and a backup cannot be imported as a project.
+- **Undo/redo:** Ctrl+Z / Ctrl+Shift+Z.
+- **Autosave:** the top bar always says Saved, Saving…, Unsaved changes, or Not saved (with retry).
+- **Backups:** choose a backup folder (Chrome/Edge), or download a backup ZIP. Backups include projects, tasks, templates, links, categories, tags, image markup, sketches, and imported original files. Restore checks the whole file first and keeps a safety copy of what it replaces. Older (Stage 1–3) backups still restore. A backup is a complete working copy, not a redacted file for sharing.
+- **Offline:** after the first visit, the app opens without a connection.
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+Keyboard shortcuts are listed in Settings.
 
-Note: This will impact Vite dev & build performances.
-You can also try [the experimental native React Compiler support in plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md#rust-react-compiler) by using `compiler: true` in the plugin options instead of using the Babel plugin.
+## Run it
 
-## Expanding the ESLint configuration
+Needs Node.js 22+ and npm.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+npm ci
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+npm run dev
 ```
+
+Then open the printed local address in Chrome. The development server does not enable offline mode.
+
+To try the real production build (with offline support):
+
+```bash
+npm run build
+```
+
+```bash
+npm run preview
+```
+
+## Checks
+
+```bash
+npm run check
+```
+
+Runs the TypeScript build, ESLint, and the unit/integration tests.
+
+Browser tests (builds the app and serves it on port 4173):
+
+```bash
+npm run test:e2e
+```
+
+If port 4173 is busy (for example your own `npm run preview` is open), run them on another port and build folder, which leaves `dist/` and your preview alone:
+
+```bash
+E2E_PORT=4273 E2E_OUT_DIR=/tmp/minty-e2e-dist npm run test:e2e
+```
+
+On a new machine, install Playwright's browser first:
+
+```bash
+npx playwright install chromium
+```
+
+## Backups — what to know
+
+- Your working copy lives in this browser profile at this web address. Clearing site data deletes it — keep backups.
+- **Persistent storage** (Settings → Storage) is decided by Chrome on its own; asking again cannot force it. “Not granted” means Chrome may delete this site's data without asking if the disk gets nearly full. Even when granted, clearing site data, removing the Chrome profile, or opening the app at a different address or port (each has its own storage) loses or hides the workspace. Installing the app usually makes Chrome grant it, but only a backup folder or downloaded backup protects your notes.
+- With a backup folder chosen, a snapshot is saved every 30 minutes **while the app is open** and something changed. The newest 10 are kept.
+- Folder access can lapse after a browser restart; the app shows “Backups paused” and a **Reconnect folder** button.
+- A backup in a Dropbox folder is a recoverable copy, not live sync between computers.
+
+## Deploying (later)
+
+The build in `dist/` is static and uses relative paths, so it can be served from any stable HTTPS address. Not deployed yet. Moving to a new address means backup → restore, because browser storage belongs to the address.
+
+## Documentation
+
+- `docs/MINTY_NOTES_PLAN.md` — product plan (source of truth)
+- `docs/ARCHITECTURE.md` — decisions, libraries, and how things work
+- `docs/DATA_FORMAT.md` — stored records and backup format
+- `docs/PROGRESS.md` — what's done, how it was checked, limitations, next task
+- `docs/CLAUDE_CODE_HANDOFF.md` — build prompts for each stage
+- `src/export/fonts/LICENSE-*.txt` — licences of the fonts embedded in exported PDFs (Liberation Sans, SIL OFL 1.1; DejaVu Sans Mono, Bitstream Vera licence)

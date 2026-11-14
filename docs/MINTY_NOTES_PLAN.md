@@ -255,9 +255,39 @@ Divide this stage into independently checked slices: rich text and page links; i
 
 Refine shortcuts, responsive layouts, print/export behavior, performance on realistic datasets, and accessibility. Add authorized local-folder browsing if it remains useful. Phone layouts should help users navigate and read wide pages without rearranging the desktop layout.
 
+#### Stage 5 backlog requested by the user (recorded November 12, 2026 — not started, not designed)
+
+Two UI improvements the user asked for after the 0.4.2 manual QA. They are requirements to plan within Stage 5, which still needs approval; nothing here is implemented.
+
+**Resizable and collapsible project navigation.** The project sidebar that holds Overview, Tasks, Files, Notes, and References should:
+
+- be resizable by dragging its right edge;
+- collapse and expand with one click;
+- remember its width and its collapsed state (a per-device setting, like other view preferences — not part of the workspace data or backups unless decided otherwise);
+- have sensible minimum and maximum widths;
+- behave well at narrow window and phone widths, and be accessible: a keyboard way to resize and to collapse/expand, a focusable separator with its value announced, visible focus, and no content lost or trapped while collapsed.
+
+**Manual note ordering.** A project's notes should support:
+
+- drag-and-drop reordering;
+- a custom order that persists;
+- keyboard-accessible reordering controls (as the task board has Alt+arrow moves), with the move announced;
+- the chosen order preserved through backup, restore, and portable project export/import.
+
+Notes for whoever plans it (from the 0.4.2 note-order investigation, see `ARCHITECTURE.md`, “Order of a project's notes”): today the list is “most recently edited first”, so a manual order needs a decision on how the two coexist (for example a per-project “sort by: manual / last edited” choice, with manual as the default once the user has dragged something). `Page.order` already exists, is already written for every project note, already travels in backups, and already keeps its relative sequence through project packages (export renumbers 1…n, import keeps that sequence) — so a manual order can probably reuse it without a new field; if a per-project sort choice is stored, that is a stored-record change (`FORMAT_VERSION` / `DB_VERSION` bump, migration, a migration step for older project packages, and tests). Reference copies that arrive with an imported project are notes of that project and need a defined place in a manual order (today: after the project's own notes).
+
 ### Stage 6 — optional desktop packaging
 
 Evaluate Linux and Windows packaging only after the browser product is stable. Verify offline startup, native folder access, update behavior, and migration from existing browser data. Distribution and signing choices need their own plan.
+
+### Later enhancement ideas (recorded November 7, 2026 — not scheduled)
+
+The user asked to record these for the roadmap without implementing them yet. Each needs its own plan and approval; none is part of Stages 4–6 as written.
+
+- **Minty-Graph:** a visual knowledge graph of pages, projects, and links, and mind maps.
+- **Grouping drawing objects:** group and ungroup annotations in sketches and screenshot markup so they move and resize together.
+- **Reusable technical shapes and symbols:** a user library of custom shapes and symbols for sketches (not validated electrical CAD symbols, which remain separate future work).
+- **Minty Notes User Guide:** a comprehensive, beginner-friendly guide with screenshots and step-by-step workflows.
 
 ## Verification that matters
 
