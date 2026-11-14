@@ -2465,3 +2465,100 @@ a.btn {
 .pdf-status {
   min-height: 1.4em;
 }
+
+/* ---------- portable project export / import ---------- */
+.transfer-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.transfer-dialog .subhead {
+  margin-top: 16px;
+}
+.transfer-dialog .summary {
+  grid-template-columns: minmax(120px, max-content) 1fr;
+}
+.transfer-dialog .dialog-actions {
+  position: sticky;
+  bottom: -20px;
+  margin: 16px -22px -20px;
+  padding: 12px 22px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 0;
+  cursor: pointer;
+}
+.check-row input {
+  flex: none;
+  margin-top: 3px;
+  accent-color: var(--mint);
+}
+.check-row input:disabled + span {
+  color: var(--text-3);
+}
+.transfer-group {
+  margin: 4px 0 10px;
+}
+.transfer-hint {
+  margin: 0 0 4px 24px;
+}
+.transfer-list {
+  margin: 4px 0 8px 24px;
+  padding-left: 16px;
+  font-size: 13px;
+}
+.transfer-list.plain {
+  margin-left: 0;
+  color: var(--text-2);
+}
+.transfer-list li {
+  margin: 2px 0;
+}
+.transfer-list li.is-out .transfer-title {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+.transfer-details {
+  margin: 8px 0;
+}
+.transfer-details summary {
+  cursor: pointer;
+  color: var(--text-2);
+}
+.transfer-details .transfer-list {
+  margin-left: 0;
+}
+.transfer-choice {
+  margin: 12px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.transfer-choice legend {
+  padding: 0 6px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.callout-warn {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+.callout-warn > strong:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn);
+}
+.callout-warn p {
+  margin: 6px 0;
+}
+.callout-warn svg {
+  flex: none;
+  vertical-align: -2px;
+  color: var(--warn);
+}

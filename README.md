@@ -2,7 +2,7 @@
 
 A local-first notebook for technical projects and reusable knowledge, in the Minty charcoal-and-mint style. Notes, layouts, and screenshots stay in your browser on your computer — no account, server, or subscription.
 
-**Status:** Stages 0–3 and four Stage 4 slices — a working notebook with reliable local saving, backups, and offline use; projects, a reusable reference library, tags, search, and a home dashboard; task boards, task-to-note links, a project Files tab, and templates; (0.4.0) tables, code blocks, internal page links, screenshot markup and sketches, and local DOCX/PDF import; and (0.4.1) note-to-PDF export. Portable project export/import is the next (not yet started) checkpoint. See `docs/PROGRESS.md`.
+**Status:** Stages 0–4 — a working notebook with reliable local saving, backups, and offline use; projects, a reusable reference library, tags, search, and a home dashboard; task boards, task-to-note links, a project Files tab, and templates; (0.4.0) tables, code blocks, internal page links, screenshot markup and sketches, and local DOCX/PDF import; (0.4.1) note-to-PDF export; and (0.4.2) portable project export/import. See `docs/PROGRESS.md`.
 
 ## What it does now
 
@@ -23,6 +23,7 @@ A local-first notebook for technical projects and reusable knowledge, in the Min
 - **Screenshot markup and sketches:** select an image and choose **Mark up** (or press Enter / double-click): arrows, lines, rectangles, ellipses, labels, pen, highlighter, crop, blur, and redaction boxes, all editable later. **Sketch** adds a vector drawing for simple wiring diagrams. The original image file never changes. **Blur is visual only and a redaction box only covers the area on screen — the original pixels stay in this workspace and its backups.** “Save PNG copy” downloads a flattened image in which redacted areas are solid black.
 - **Import documents:** “Import document” (Inbox, notes, notebook sections, projects) turns a .docx or text-based PDF into an editable draft and keeps the original file unchanged (preview, download, and a list of what did not convert). No OCR: scanned PDFs can only be kept as originals.
 - **Export a note as PDF:** “Export PDF” at the top of any note (Inbox, notes, notebooks, projects, imported drafts) shows a preview of the actual PDF file, with Letter/A4, automatic/portrait/landscape, and light or dark colours, then downloads it. Text stays real, selectable text with the same line breaks as on screen; headings, lists, tables, code, links, screenshots, markup, and sketches are included; long notes are split at sensible places and wide notes are scaled to fit (never cut off). **Pictures are flattened: redacted areas are solid black in the PDF and the original image files are not included.** The note itself is never changed, and export works offline and in a read-only window.
+- **Move a project to another computer or a coworker:** open the project and choose **Export project**. You get one file (`minty-project-….zip`) with the project, its notes, tasks, images, imported originals, and copies of the library reference pages it links to; the dialog shows exactly what is and is not included first. Pages you have hidden for the project, and pages that belong to another project, are never put in the file, even when a note links to them — the dialog lists them, and their links arrive as unavailable links. On the other computer: **Projects → Import project**, choose the file, check the summary, confirm. It arrives as a new, independent project next to the existing ones (named “… (imported)” if the name is taken) — nothing there is replaced or changed, and editing it never affects the sender's copy. **A project package is editable data, not a redacted document: it contains the original image files in full, also behind redaction boxes, blur, and crops.** Use “Save PNG copy” or “Export PDF” to share something without the hidden parts. The contents of saved file locations are not included (only the paths and links). A project package is not a backup, and a backup cannot be imported as a project.
 - **Undo/redo:** Ctrl+Z / Ctrl+Shift+Z.
 - **Autosave:** the top bar always says Saved, Saving…, Unsaved changes, or Not saved (with retry).
 - **Backups:** choose a backup folder (Chrome/Edge), or download a backup ZIP. Backups include projects, tasks, templates, links, categories, tags, image markup, sketches, and imported original files. Restore checks the whole file first and keeps a safety copy of what it replaces. Older (Stage 1–3) backups still restore. A backup is a complete working copy, not a redacted file for sharing.
@@ -66,6 +67,12 @@ Browser tests (builds the app and serves it on port 4173):
 
 ```bash
 npm run test:e2e
+```
+
+If port 4173 is busy (for example your own `npm run preview` is open), run them on another port and build folder, which leaves `dist/` and your preview alone:
+
+```bash
+E2E_PORT=4273 E2E_OUT_DIR=/tmp/minty-e2e-dist npm run test:e2e
 ```
 
 On a new machine, install Playwright's browser first:

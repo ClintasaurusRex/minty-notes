@@ -140,6 +140,11 @@ export const IconDownload = (p: IconProps) => (
     <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
   </Svg>
 )
+export const IconExport = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 15V4M7 9l5-5 5 5M5 20h14" />
+  </Svg>
+)
 export const IconLeaf = (p: IconProps) => (
   <Svg {...p}>
     <path d="M5 19c0-8 5-14 15-14 0 10-6 15-14 15" />

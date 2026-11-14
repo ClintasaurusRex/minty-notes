@@ -1,4 +1,4 @@
-import { unzip, zip, type AsyncZippable, type Unzipped } from 'fflate'
+import { zip, type AsyncZippable } from 'fflate'
 import { isDateOnly } from '../domain/dates'
 import { validateMarkup } from '../domain/markup'
 import { pageLinkIds } from '../domain/pageLink'
@@ -6,6 +6,7 @@ import { validateRichTextDoc } from '../domain/richtext'
 import { isTaskPriority, isTaskStatus } from '../domain/tasks'
 import { templateAttachmentIds } from '../domain/templates'
 import { FORMAT_VERSION, PROJECT_STATUSES, type AttachmentMeta, type CanvasObject, type WorkspaceRecords } from '../domain/types'
+import { entryBytes, readZipDirectory, ZipEntryError, type ZipDirectory, type ZipEntry } from './zipReader'
 
 /**
  * Full-workspace backup archive (ZIP):
@@ -15,6 +16,8 @@ import { FORMAT_VERSION, PROJECT_STATUSES, type AttachmentMeta, type CanvasObjec
  *   README.txt           human-readable explanation
  */
 export const BACKUP_FORMAT = 'minty-notes-backup'
+/** Format name of a portable project package (see src/portable); never restorable as a backup. */
+export const PROJECT_PACKAGE_FORMAT = 'minty-notes-project'
 const MANIFEST = 'manifest.json'
 const RECORDS = 'records.json'
 const README = 'README.txt'
@@ -22,6 +25,12 @@ const README = 'README.txt'
 const MAX_TOTAL_BYTES = 4 * 1024 ** 3
 const MAX_ENTRIES = 200_000
 const MAX_ERRORS = 25
+/** manifest.json lists one line per attachment; 200,000 of them take about 50 MB. */
+const MAX_MANIFEST_BYTES = 64 * 1024 ** 2
+/** The longest records.json that can be restored at all: browsers cannot hold a longer text (about 512 MB in Chrome). */
+const MAX_RECORDS_BYTES = 512 * 1024 ** 2
+/** Unexpected files named one by one in the restore review; the rest are counted. */
+const MAX_NAMED_UNEXPECTED = 10
 
 export interface ManifestFile {
   attachmentId: string
@@ -80,11 +89,16 @@ const EXTENSIONS: Record<string, string> = {
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
 }
 
-function attachmentPath(meta: AttachmentMeta): string {
-  return `attachments/${meta.id}${EXTENSIONS[meta.mimeType] ?? '.bin'}`
+/** File extension (with the dot) for an attachment type; `.bin` when unknown. */
+export function attachmentExtension(mimeType: string): string {
+  return EXTENSIONS[mimeType] ?? '.bin'
 }
 
-function zipAsync(files: AsyncZippable): Promise<Uint8Array> {
+function attachmentPath(meta: AttachmentMeta): string {
+  return `attachments/${meta.id}${attachmentExtension(meta.mimeType)}`
+}
+
+export function zipAsync(files: AsyncZippable): Promise<Uint8Array> {
   return new Promise((resolve, reject) => zip(files, (err, data) => (err ? reject(err) : resolve(data))))
 }
 
@@ -143,57 +157,65 @@ function countsOf(records: WorkspaceRecords): Required<Manifest['counts']> {
 
 // ------------------------------------------------------------------ parsing
 
-function isSafePath(name: string): boolean {
+export function isSafePath(name: string): boolean {
   return !name.startsWith('/') && !name.includes('\\') && !name.split('/').includes('..') && !/^[a-zA-Z]:/.test(name)
 }
 
-function unzipSafely(bytes: Uint8Array, errors: string[], warnings: string[]): Promise<Unzipped | null> {
-  let total = 0
-  let count = 0
-  let tooLarge = false
-  return new Promise((resolve) => {
-    try {
-      unzip(
-        bytes,
-        {
-          filter(file) {
-            count++
-            if (count > MAX_ENTRIES) {
-              tooLarge = true
-              return false
-            }
-            if (!isSafePath(file.name)) {
-              warnings.push(`Ignored unsafe file path in archive: ${file.name}`)
-              return false
-            }
-            const known = file.name === MANIFEST || file.name === RECORDS || file.name.startsWith('attachments/')
-            if (!known) {
-              if (file.name !== README && !file.name.endsWith('/')) warnings.push(`Ignored unexpected file: ${file.name}`)
-              return false
-            }
-            total += file.originalSize
-            if (total > MAX_TOTAL_BYTES) {
-              tooLarge = true
-              return false
-            }
-            return true
-          },
-        },
-        (err, data) => {
-          if (tooLarge) {
-            errors.push('The archive is larger than Minty Notes can safely restore.')
-            resolve(null)
-          } else if (err) {
-            errors.push(`The archive could not be read: ${err.message}`)
-            resolve(null)
-          } else resolve(data)
-        },
-      )
-    } catch (err) {
-      errors.push(`The archive could not be read: ${err instanceof Error ? err.message : String(err)}`)
-      resolve(null)
+const MB = (n: number) => `${Math.round(n / 1024 / 1024).toLocaleString('en-US')} MB`
+
+/** Why a backup's ZIP directory was refused, in words (the reader gives the reason and a detail). */
+function directoryProblem(d: Extract<ZipDirectory, { ok: false }>): string {
+  switch (d.reason) {
+    case 'not-zip':
+      return 'This file is not a Minty Notes backup (it is not a ZIP archive).'
+    case 'too-many':
+      return `The archive lists more than ${MAX_ENTRIES.toLocaleString('en-US')} files; it is larger than Minty Notes can safely restore.`
+    case 'incomplete':
+      return `The backup file is damaged or incomplete (${d.detail}). It may not have been downloaded or copied completely.`
+    case 'foreign':
+      return `The backup file cannot be read safely: its ZIP structure is not valid (${d.detail}).`
+  }
+}
+
+const isKnownEntry = (name: string) => name === MANIFEST || name === RECORDS || name.startsWith('attachments/')
+
+/**
+ * The names in a backup's ZIP directory, judged before anything is unpacked.
+ * The same name twice (which copy would count?) or an unsafe path refuses the
+ * archive. Other unexpected files — e.g. left by a ZIP tool after the backup
+ * was unpacked and zipped again — are ignored with a warning, and never
+ * unpacked. Folders are skipped.
+ */
+function checkEntryNames(entries: ZipEntry[], errors: string[], warnings: string[]): Map<string, ZipEntry> | null {
+  const byName = new Map<string, ZipEntry>()
+  const unexpected: string[] = []
+  for (const e of entries) {
+    const shown = JSON.stringify(e.name.slice(0, 120))
+    if (byName.has(e.name)) {
+      errors.push(`The backup contains the file ${shown} more than once, so it cannot be restored safely.`)
+      return null
     }
-  })
+    byName.set(e.name, e)
+    // eslint-disable-next-line no-control-regex
+    if (!isSafePath(e.name) || /[\u0000-\u001f\u007f]/.test(e.name)) {
+      errors.push(`The backup contains an unsafe file path (${shown}), so it cannot be restored.`)
+      return null
+    }
+    if (!isKnownEntry(e.name) && e.name !== README && !e.name.endsWith('/')) unexpected.push(e.name)
+  }
+  for (const name of unexpected.slice(0, MAX_NAMED_UNEXPECTED)) warnings.push(`Ignored unexpected file: ${name.slice(0, 200)}`)
+  if (unexpected.length > MAX_NAMED_UNEXPECTED) warnings.push(`Ignored ${(unexpected.length - MAX_NAMED_UNEXPECTED).toLocaleString('en-US')} more unexpected files.`)
+  return byName
+}
+
+/** Unpack one approved entry within its limit; a damaged entry becomes an error message. */
+async function unpackEntry(bytes: Uint8Array, entry: ZipEntry, maxBytes: number): Promise<{ data: Uint8Array } | { error: string }> {
+  try {
+    return { data: await entryBytes(bytes, entry, maxBytes, 'backup') }
+  } catch (err) {
+    if (err instanceof ZipEntryError) return { error: `The backup is damaged: ${err.message}` }
+    throw err
+  }
 }
 
 function parseJson(bytes: Uint8Array | undefined, label: string, errors: string[]): unknown {
@@ -216,7 +238,7 @@ const isId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 const isTime = (v: unknown): v is string => typeof v === 'string' && !Number.isNaN(Date.parse(v))
 
-class Checker {
+export class Checker {
   readonly errors: string[]
   constructor(errors: string[]) {
     this.errors = errors
@@ -239,7 +261,12 @@ function checkCommon(c: Checker, kind: string, r: unknown, i: number): r is Obj 
 
 const isIdList = (v: unknown): v is string[] => Array.isArray(v) && v.every(isId)
 
-function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
+/**
+ * Check every record shape and relationship of a set of workspace records
+ * (also used for portable project packages, which hold a small workspace of
+ * one project). Problems are added to the checker; returns null if any.
+ */
+export function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | null {
   if (!c.require(isObj(raw), 'records.json does not contain a records object.')) return null
   const r = raw as Obj
   const lists = ['projects', 'tasks', 'templates', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'objects', 'attachments'] as const
@@ -552,11 +579,28 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
   if (bytes.byteLength < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
     return { ok: false, errors: ['This file is not a Minty Notes backup (it is not a ZIP archive).'] }
   }
-  const files = await unzipSafely(bytes, errors, warnings)
+  // ---- the ZIP directory, before anything is unpacked: structure, entry count, names, sizes.
+  // Backups may have been unpacked and zipped again with a ZIP tool, so any well-formed ZIP is read
+  // (the `standard` layout); hostile structures are refused all the same.
+  const directory = readZipDirectory(bytes, MAX_ENTRIES, 'standard')
+  if (!directory.ok) return { ok: false, errors: [directoryProblem(directory)] }
+  const files = checkEntryNames(directory.entries, errors, warnings)
   if (!files) return { ok: false, errors }
+  let total = 0
+  for (const e of directory.entries) if (isKnownEntry(e.name)) total += e.size
+  if (total > MAX_TOTAL_BYTES) return { ok: false, errors: ['The archive is larger than Minty Notes can safely restore.'] }
 
-  const manifest = parseJson(files[MANIFEST], 'manifest.json', errors)
+  // ---- manifest.json: exactly one (names are unique), unpacked within its limit
+  const manifestEntry = files.get(MANIFEST)
+  if (!manifestEntry) return { ok: false, errors: ['manifest.json is missing.'] }
+  if (manifestEntry.size > MAX_MANIFEST_BYTES) return { ok: false, errors: [`manifest.json would unpack to ${MB(manifestEntry.size)}, more than any backup Minty Notes writes.`] }
+  const manifestBytes = await unpackEntry(bytes, manifestEntry, MAX_MANIFEST_BYTES)
+  if ('error' in manifestBytes) return { ok: false, errors: [manifestBytes.error] }
+  const manifest = parseJson(manifestBytes.data, 'manifest.json', errors)
   if (!isObj(manifest)) return { ok: false, errors: errors.length ? errors : ['manifest.json is invalid.'] }
+  if (manifest.format === PROJECT_PACKAGE_FORMAT) {
+    return { ok: false, errors: ['This file is a portable project package, not a full workspace backup. Import it with Projects → Import project; it adds one project and replaces nothing.'] }
+  }
   if (manifest.format !== BACKUP_FORMAT) return { ok: false, errors: ['This ZIP file is not a Minty Notes backup.'] }
   if (!isNum(manifest.formatVersion) || manifest.formatVersion < 1) return { ok: false, errors: ['The backup format version is invalid.'] }
   if (manifest.formatVersion > FORMAT_VERSION) {
@@ -565,11 +609,16 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
   const m = manifest as unknown as Manifest
   if (!isObj(m.records) || !Array.isArray(m.files) || !isObj(m.counts)) return { ok: false, errors: ['manifest.json is incomplete.'] }
 
-  const recordBytes = files[RECORDS]
-  if (!recordBytes) return { ok: false, errors: ['records.json is missing from the backup.'] }
-  if ((await sha256Hex(recordBytes)) !== m.records.sha256) {
-    return { ok: false, errors: ['records.json does not match its checksum. The backup is damaged.'] }
-  }
+  // ---- records.json: size first (the directory and the manifest must agree), then unpacked within its limit
+  const recordsEntry = files.get(RECORDS)
+  if (!recordsEntry) return { ok: false, errors: ['records.json is missing from the backup.'] }
+  const recordsMismatch = { ok: false as const, errors: ['records.json does not match its checksum. The backup is damaged.'] }
+  if (isNum(m.records.size) && recordsEntry.size !== m.records.size) return recordsMismatch
+  if (recordsEntry.size > MAX_RECORDS_BYTES) return { ok: false, errors: [`records.json would unpack to ${MB(recordsEntry.size)}, more than Minty Notes can restore (${MB(MAX_RECORDS_BYTES)}).`] }
+  const unpackedRecords = await unpackEntry(bytes, recordsEntry, MAX_RECORDS_BYTES)
+  if ('error' in unpackedRecords) return { ok: false, errors: [unpackedRecords.error] }
+  const recordBytes = unpackedRecords.data
+  if ((await sha256Hex(recordBytes)) !== m.records.sha256) return recordsMismatch
   const raw = parseJson(recordBytes, 'records.json', errors)
   if (errors.length) return { ok: false, errors }
 
@@ -584,9 +633,11 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
   const records = validateRecords(raw, checker)
   if (!records) return { ok: false, errors }
 
-  // Attachment bytes: present, sized, and matching their checksums.
+  // Attachment bytes: present, sized, and matching their checksums. Each file is unpacked at most
+  // once (no two attachments may share one), and the first damaged file stops the check.
   const blobs = new Map<string, Blob>()
   const byId = new Map(m.files.filter(isObj).map((f) => [f.attachmentId, f]))
+  const usedPaths = new Set<string>()
   let attachmentBytes = 0
   for (const meta of records.attachments) {
     const entry = byId.get(meta.id)
@@ -594,11 +645,26 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
       checker.fail(`The backup has no file for attachment “${meta.fileName}”.`)
       continue
     }
-    const data = files[entry.path]
-    if (!data) {
+    if (usedPaths.has(entry.path) || !entry.path.startsWith('attachments/')) {
+      checker.fail(`The backup lists an invalid file for attachment “${meta.fileName}”.`)
+      continue
+    }
+    usedPaths.add(entry.path)
+    const zipEntry = files.get(entry.path)
+    if (!zipEntry) {
       checker.fail(`The file for attachment “${meta.fileName}” is missing from the archive.`)
       continue
     }
+    if (zipEntry.size !== entry.size) {
+      checker.fail(`The file for attachment “${meta.fileName}” is damaged (checksum mismatch).`)
+      continue
+    }
+    const unpacked = await unpackEntry(bytes, zipEntry, MAX_TOTAL_BYTES)
+    if ('error' in unpacked) {
+      checker.fail(unpacked.error)
+      break
+    }
+    const data = unpacked.data
     if (data.byteLength !== entry.size || (await sha256Hex(data)) !== entry.sha256) {
       checker.fail(`The file for attachment “${meta.fileName}” is damaged (checksum mismatch).`)
       continue

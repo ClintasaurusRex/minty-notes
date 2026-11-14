@@ -30,12 +30,17 @@ export interface PageLinkRequestDetail {
 
 export const pageLinkStatusKey = new PluginKey<{ decorations: DecorationSet; hasLinks: boolean }>('pageLinkStatus')
 
-/** The page link at (or touching) the cursor or selection start, if any. */
-export function pageLinkAt(state: EditorState): string | null {
-  const { $from, empty } = state.selection
+/** The page link at (or touching) a cursor position, or at the start of a selection, if any. */
+function pageLinkAtRange(state: EditorState, from: number, empty: boolean): string | null {
+  const $from = state.doc.resolve(Math.max(0, Math.min(from, state.doc.content.size)))
   const candidates = [...$from.marks(), ...(empty ? [...($from.nodeBefore?.marks ?? []), ...($from.nodeAfter?.marks ?? [])] : ($from.nodeAfter?.marks ?? []))]
   const mark = candidates.find((m) => m.type.name === PAGE_LINK)
   return mark ? (mark.attrs.pageId as string) : null
+}
+
+/** The page link at (or touching) the cursor or selection start, if any. */
+export function pageLinkAt(state: EditorState): string | null {
+  return pageLinkAtRange(state, state.selection.from, state.selection.empty)
 }
 
 /** Range of the page link around the cursor (for "Remove link"). */
@@ -105,7 +110,10 @@ export const PageLinkUi = Extension.create<PageLinkUiOptions>({
         return true
       },
       'Alt-Enter': () => {
-        const id = pageLinkAt(this.editor.state)
+        // A click moves the browser's selection at once, but the editor state follows a moment
+        // later; a key pressed straight after the click reads the live selection (as above).
+        const { from, to } = liveRange(this.editor.view)
+        const id = pageLinkAtRange(this.editor.state, from, from === to)
         if (!id) return false
         fire(this.editor.view.dom, PAGE_LINK_FOLLOW, id)
         return true

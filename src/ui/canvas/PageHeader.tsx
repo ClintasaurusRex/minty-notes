@@ -51,7 +51,7 @@ function ShareBanner({ page, projectId }: { page: Page; projectId: string | null
       <div className="share-banner is-copy" role="note" data-testid="copy-banner">
         <span className="badge badge-copy">Project copy</span>
         <span>
-          Independent copy of “{page.copiedFrom.title}” made {shortDateTime(page.copiedFrom.at)}. Changes here do not affect the original{original ? '' : ' (which has since been deleted)'}.
+          Independent copy of “{page.copiedFrom.title}” made {shortDateTime(page.copiedFrom.at)}. Changes here do not affect the original{original ? '' : ' (which is not in this workspace: it was deleted, or this page came with an imported project)'}.
         </span>
         {original && !original.trashedAt && (
           <button type="button" className="btn btn-small btn-ghost" onClick={() => nav.openPage(original.id, null)}>

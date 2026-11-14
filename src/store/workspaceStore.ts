@@ -29,7 +29,7 @@ import { pageLinkIds } from '../domain/pageLink'
 import { markupText } from '../domain/markup'
 import { isLinkedTo, keepExisting, ownerProjectId } from '../domain/references'
 import { normalize, type PageText } from '../domain/search'
-import { changeSetSize, describeStorageError, emptyChangeSet, type ChangeSet, type Repository } from '../storage/repository'
+import { changeSetSize, describeStorageError, emptyChangeSet, type ChangeSet, type ImportBatch, type Repository } from '../storage/repository'
 import { PageHistory, type HistoryEntry, type ObjectChange } from './history'
 import { isIntendedChange, reconcileHeldChanges, type HeldChange, type ReconcileResult, type RecordKind } from './reconcile'
 
@@ -400,6 +400,55 @@ export class WorkspaceStore {
     this.clearTimers()
     this.dirty = emptyChangeSet()
     await this.load()
+  }
+
+  /**
+   * Add a set of new records and attachment files (a portable project import)
+   * in one all-or-nothing transaction. Everything already saved is flushed
+   * first; `build` then sees the workspace exactly as stored and returns what
+   * to add. Nothing existing is replaced: storage refuses the whole batch if
+   * any ID is already in use. On any failure the workspace is unchanged.
+   */
+  async addImportedRecords(build: (data: WorkspaceData) => ImportBatch): Promise<void> {
+    this.assertWritable()
+    if (!this.owner) throw new ReadOnlyError()
+    const saved = await this.flush()
+    if (!saved || changeSetSize(this.dirty) > 0 || this.inflight) {
+      throw new Error('Recent changes could not be saved, so nothing was imported. Resolve the save error and try again.')
+    }
+    this.assertWritable()
+    if (!this.owner) throw new ReadOnlyError()
+    const batch = build(this.state.data)
+    const at = nowIso()
+    let revision: number
+    try {
+      revision = await this.repo.importRecords(batch, at, this.token)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'OwnershipError') this.revokeOwnership()
+      throw err
+    }
+    // Stored: show the new records without reloading (open pages and undo history stay).
+    const data = this.state.data
+    const patch: Partial<WorkspaceData> = { lastChangeAt: at, revision }
+    for (const kind of INDEX_KINDS) {
+      const added = batch.changes[kind] as Map<string, { id: string } | null>
+      if (added.size === 0) continue
+      const next: Record<string, unknown> = { ...data[kind] }
+      for (const [id, value] of added) {
+        if (!value) continue
+        next[id] = value
+        this.committed.set(`${kind}:${id}`, value)
+      }
+      ;(patch as Record<string, unknown>)[kind] = next
+    }
+    for (const [id, value] of batch.changes.objects) if (value) this.committed.set(`objects:${id}`, value)
+    if (batch.attachments.length > 0) patch.attachments = { ...data.attachments, ...Object.fromEntries(batch.attachments.map((a) => [a.meta.id, a.meta])) }
+    this.setData(patch)
+    // An edit made while the import was being written is still unsaved, or being saved, right now:
+    // the save status stays with whatever the autosave is doing and is not declared "saved" here.
+    const save = this.state.save
+    const stillSaving = this.inflight !== null || changeSetSize(this.dirty) > 0 || save.status === 'error'
+    this.setState({ save: stillSaving ? { ...save, lastSavedAt: at } : { status: 'saved', lastSavedAt: at, error: null } })
   }
 
   // ------------------------------------------------------------- autosave

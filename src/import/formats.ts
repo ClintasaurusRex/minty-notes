@@ -1,4 +1,4 @@
-import { unzip } from 'fflate'
+import { checkEntry, readZipDirectory, ZipEntryError } from '../backup/zipReader'
 
 /**
  * Local document import: format detection and safety limits (pure, no DOM).
@@ -80,41 +80,60 @@ export function detectFormat(name: string, bytes: Uint8Array): Detected {
 }
 
 /**
- * Look inside a DOCX container without unpacking it: it must be a readable
- * ZIP with `word/document.xml`, a sane number of entries, and a total
- * unpacked size within the limit (declared sizes; the converter also stops
- * at damaged entries).
+ * Check a DOCX container before anything reads it (the converter, the preview,
+ * or an import of a project package that holds the file). Only the ZIP
+ * structure is trusted, and only after it has been checked:
+ *
+ * 1. The directory, the header in front of every part, and every part's byte
+ *    range must agree and lie inside the file (`readZipDirectory`, standard
+ *    layout — Word, LibreOffice, Google Docs, and other writers use data
+ *    descriptors, extra fields, and so on, which are fine). Nothing is
+ *    unpacked for this. A part listed twice is refused.
+ * 2. It must hold `word/document.xml`, at most 5,000 parts, and declare at
+ *    most 300 MB in all.
+ * 3. Every part must then really unpack to the size and CRC the directory
+ *    records (`checkEntry`: bounded, nothing kept). Declared sizes are
+ *    therefore true, so the 300 MB limit also bounds the converter, which
+ *    unpacks the same parts again.
  */
-export function checkDocxContainer(name: string, bytes: Uint8Array): Promise<{ ok: true; macros: boolean } | { ok: false; reason: string }> {
-  return new Promise((resolve) => {
-    let entries = 0
-    let total = 0
-    let hasDocument = false
-    let macros = false
+export async function checkDocxContainer(name: string, bytes: Uint8Array): Promise<{ ok: true; macros: boolean } | { ok: false; reason: string }> {
+  try {
+    return await checkContainer(name, bytes)
+  } catch (err) {
+    // Never throws for a bad file: anything unexpected is a reason, like any other.
+    return { ok: false, reason: `“${name}” is not a readable .docx file (${err instanceof Error ? err.message : String(err)}).` }
+  }
+}
+
+async function checkContainer(name: string, bytes: Uint8Array): Promise<{ ok: true; macros: boolean } | { ok: false; reason: string }> {
+  const unreadable = (detail: string) => ({ ok: false as const, reason: `“${name}” is not a readable .docx file (${detail}).` })
+  const directory = readZipDirectory(bytes, MAX_DOCX_ENTRIES, 'standard')
+  if (!directory.ok) {
+    if (directory.reason === 'too-many') return { ok: false, reason: `“${name}” contains ${(directory.count ?? MAX_DOCX_ENTRIES + 1).toLocaleString('en-US')} parts, more than Minty Notes will open (${MAX_DOCX_ENTRIES}).` }
+    return unreadable(directory.detail)
+  }
+  const seen = new Set<string>()
+  let total = 0
+  let hasDocument = false
+  let macros = false
+  for (const entry of directory.entries) {
+    if (seen.has(entry.name)) return unreadable(`the part ${JSON.stringify(entry.name.slice(0, 120))} appears more than once`)
+    seen.add(entry.name)
+    total += entry.size
+    if (entry.name === 'word/document.xml') hasDocument = true
+    if (/vbaProject\.bin$/i.test(entry.name)) macros = true
+  }
+  if (total > MAX_DOCX_UNPACKED) return { ok: false, reason: `“${name}” would unpack to ${(total / 1024 / 1024).toFixed(0)} MB, more than the ${MAX_DOCX_UNPACKED / 1024 / 1024} MB limit.` }
+  if (!hasDocument) return { ok: false, reason: `“${name}” is a ZIP file but not a Word document (no word/document.xml).` }
+  for (const entry of directory.entries) {
     try {
-      unzip(
-        bytes,
-        {
-          filter(file) {
-            entries++
-            total += file.originalSize
-            if (file.name === 'word/document.xml') hasDocument = true
-            if (/vbaProject\.bin$/i.test(file.name)) macros = true
-            return false // only the directory is read here
-          },
-        },
-        (err) => {
-          if (err) resolve({ ok: false, reason: `“${name}” is not a readable .docx file (${err.message}).` })
-          else if (entries > MAX_DOCX_ENTRIES) resolve({ ok: false, reason: `“${name}” contains ${entries} parts, more than Minty Notes will open (${MAX_DOCX_ENTRIES}).` })
-          else if (total > MAX_DOCX_UNPACKED) resolve({ ok: false, reason: `“${name}” would unpack to ${(total / 1024 / 1024).toFixed(0)} MB, more than the ${MAX_DOCX_UNPACKED / 1024 / 1024} MB limit.` })
-          else if (!hasDocument) resolve({ ok: false, reason: `“${name}” is a ZIP file but not a Word document (no word/document.xml).` })
-          else resolve({ ok: true, macros })
-        },
-      )
+      await checkEntry(bytes, entry, MAX_DOCX_UNPACKED, 'document')
     } catch (err) {
-      resolve({ ok: false, reason: `“${name}” is not a readable .docx file (${err instanceof Error ? err.message : String(err)}).` })
+      if (err instanceof ZipEntryError) return unreadable(err.message.replace(/\.$/, ''))
+      throw err
     }
-  })
+  }
+  return { ok: true, macros }
 }
 
 /** A readable page title from a file name ("Pump-spec_v2.docx" → "Pump spec v2"). */

@@ -82,3 +82,52 @@ export async function dragBy(page: Page, from: Locator, dx: number, dy: number):
   await page.mouse.move(sx + dx, sy + dy, { steps: 6 })
   await page.mouse.up()
 }
+
+export interface WorkspaceDump {
+  /** Every stored record by store name, each as JSON text keyed by record ID. */
+  records: Record<string, Record<string, string>>
+  /** SHA-256 of every stored attachment file, by attachment ID. */
+  blobs: Record<string, string>
+  revision: number
+}
+
+/** Everything stored in the workspace, read straight from IndexedDB (records, file hashes, revision). */
+export async function dumpWorkspace(page: Page): Promise<WorkspaceDump> {
+  return page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('minty-notes')
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error)
+    })
+    const request = <T,>(req: IDBRequest<T>) =>
+      new Promise<T>((resolve, reject) => {
+        req.onsuccess = () => resolve(req.result)
+        req.onerror = () => reject(req.error)
+      })
+    const records: Record<string, Record<string, string>> = {}
+    for (const store of ['projects', 'tasks', 'templates', 'categories', 'tags', 'notebooks', 'sections', 'pages', 'objects', 'attachments']) {
+      const all = await request(db.transaction(store).objectStore(store).getAll() as IDBRequest<{ id: string }[]>)
+      records[store] = Object.fromEntries(all.map((r) => [r.id, JSON.stringify(r)]))
+    }
+    const blobs: Record<string, string> = {}
+    for (const key of await request(db.transaction('blobs').objectStore('blobs').getAllKeys())) {
+      const blob = await request(db.transaction('blobs').objectStore('blobs').get(key) as IDBRequest<Blob>)
+      const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
+      blobs[String(key)] = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+    }
+    const activity = (await request(db.transaction('settings').objectStore('settings').get('activity'))) as { revision?: number } | undefined
+    db.close()
+    return { records, blobs, revision: activity?.revision ?? 0 }
+  })
+}
+
+/** Everything in `before` is still stored, unchanged, in `after`. Returns how many records were added. */
+export function expectNothingChanged(before: WorkspaceDump, after: WorkspaceDump): number {
+  let added = 0
+  for (const [store, records] of Object.entries(before.records)) {
+    for (const [id, json] of Object.entries(records)) expect(after.records[store][id], `${store} ${id}`).toBe(json)
+    added += Object.keys(after.records[store]).length - Object.keys(records).length
+  }
+  for (const [id, hash] of Object.entries(before.blobs)) expect(after.blobs[id], `file ${id}`).toBe(hash)
+  return added
+}

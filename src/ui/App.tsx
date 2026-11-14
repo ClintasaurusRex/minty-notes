@@ -10,6 +10,7 @@ import { IconAlert, IconCheck, IconHome, IconInbox, IconLeaf, IconNote, IconNote
 import { NavContext, type Nav, type NavSection, type OpenProjectOptions, type ProjectTab } from './nav'
 import { Navigator } from './Navigator'
 import { dismissNotice, noticeStore, notify } from './notices'
+import { ImportProjectButton } from './ProjectImportDialog'
 import { ProjectView } from './ProjectView'
 import { recordRecent } from './recent'
 import { SearchView } from './SearchView'
@@ -328,7 +329,7 @@ export function App() {
     const { data: current, readOnly } = store.getState()
     const target = current.pages[id]
     if (!target) {
-      notify('info', 'This link points to a page that was deleted forever. The link text is kept so you can see what it referred to.')
+      notify('info', 'This link points to a page that is not in this workspace: it was deleted forever, or it was not included when this project was imported. The link text is kept so you can see what it referred to.')
       return
     }
     if (target.trashedAt) {
@@ -421,6 +422,8 @@ export function App() {
         <IconProject size={40} />
         <h1>Projects</h1>
         <p className="muted">Choose a project from the list, or create one. Project notes, linked references, details, and file locations live together.</p>
+        <ImportProjectButton variant="button" />
+        <p className="muted small">Got a project file from a coworker or another computer? Import it here — it is added as a new project and nothing you have is replaced. To send one of yours, open it and choose “Export project”.</p>
       </div>
     )
   else

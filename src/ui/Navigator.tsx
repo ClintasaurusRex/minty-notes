@@ -8,6 +8,7 @@ import { shortDateTime } from './format'
 import { IconChevron, IconPencil, IconPin, IconPlus, IconRestore, IconTag, IconTrash } from './icons'
 import { ImportButton } from './ImportButton'
 import { LabelPicker } from './LabelPicker'
+import { ImportProjectButton } from './ProjectImportDialog'
 import { useNav, type NavSection, type OpenProjectOptions } from './nav'
 import { notify } from './notices'
 import { STATUS_LABELS } from './projectFormat'
@@ -173,19 +174,22 @@ function ProjectsNav({ projectId, pageId, onOpenPage, onOpenProject }: Pick<Prop
       <div className="nav-head">
         <h2>Projects</h2>
         {!readOnly && (
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label="New project"
-            title="New project"
-            onClick={() =>
-              guard(() => {
-                onOpenProject(store.createProject({ name: 'New project' }).id)
-              })
-            }
-          >
-            <IconPlus />
-          </button>
+          <span className="row-actions always">
+            <ImportProjectButton />
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="New project"
+              title="New project"
+              onClick={() =>
+                guard(() => {
+                  onOpenProject(store.createProject({ name: 'New project' }).id)
+                })
+              }
+            >
+              <IconPlus />
+            </button>
+          </span>
         )}
       </div>
       <div className="seg" role="group" aria-label="Show projects">

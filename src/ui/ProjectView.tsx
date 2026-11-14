@@ -9,7 +9,7 @@ import { ReadOnlyError } from '../store/workspaceStore'
 import { copyText, saveAsTemplate } from './actions'
 import { relativeTime } from './format'
 import { FilesTab } from './FilesTab'
-import { IconArchive, IconCopy, IconEye, IconEyeOff, IconPin, IconPlus, IconRestore, IconTrash } from './icons'
+import { IconArchive, IconCopy, IconExport, IconEye, IconEyeOff, IconPin, IconPlus, IconRestore, IconTrash } from './icons'
 import { LabelPicker } from './LabelPicker'
 import { locationLabel } from './locations'
 import { useNav, type ProjectTab } from './nav'
@@ -17,6 +17,7 @@ import { notify } from './notices'
 import { safeUrl, STATUS_LABELS } from './projectFormat'
 import { DueBadge, PriorityBadge, TaskBoard } from './TaskBoard'
 import { ImportButton } from './ImportButton'
+import { ProjectExportDialog } from './ProjectExportDialog'
 import { TemplatePicker } from './Templates'
 
 function guard(fn: () => void) {
@@ -267,6 +268,7 @@ export function ProjectView({ projectId, tab, onTab, openTaskId, onOpenTask }: P
   const nav = useNav()
   const data = useWorkspace((s) => s.data)
   const readOnly = useWorkspace((s) => s.readOnly)
+  const [exporting, setExporting] = useState(false)
   const project = data.projects[projectId]
   if (!project) return <div className="empty-main"><p className="muted">This project no longer exists.</p></div>
   const taskCount = Object.values(data.tasks).filter((t) => t.projectId === project.id && t.status !== 'done').length
@@ -312,6 +314,12 @@ export function ProjectView({ projectId, tab, onTab, openTaskId, onOpenTask }: P
           </label>
           {due && <span className={`pill due-${due.tone}`}>{due.text}</span>}
           <span className="spacer" />
+          {!project.trashedAt && (
+            <button type="button" className="btn btn-small" title="Save this project as one file to send to a coworker or move to another computer" onClick={() => setExporting(true)} data-testid="export-project">
+              <IconExport size={14} /> Export project
+            </button>
+          )}
+          {exporting && <ProjectExportDialog projectId={project.id} onClose={() => setExporting(false)} />}
           {!readOnly && !project.trashedAt && (
             <>
               <button type="button" className="btn btn-small" onClick={() => void saveAsTemplate('project', `${project.name} template`, (name) => store.createTemplateFromProject(project.id, name))}>

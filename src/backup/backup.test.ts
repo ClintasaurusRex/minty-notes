@@ -205,13 +205,17 @@ describe('archive validation', () => {
     expect(r4).toMatchObject({ ok: false, errors: expect.arrayContaining([expect.stringMatching(/Duplicate page/)]) })
   })
 
-  it('ignores unexpected and unsafe archive entries with a warning', async () => {
+  it('ignores unexpected archive entries with a warning, but refuses unsafe paths', async () => {
     const { records, blobs } = await validArchiveFiles()
     const { unzipSync } = await import('fflate')
     const files = unzipSync(await buildArchive(records, blobs, 'test'))
-    const result = await readArchive(zipSync({ ...files, '../evil.txt': strToU8('x'), 'extra.bin': strToU8('y') }))
+    // Left behind when a backup is unpacked and zipped again: still restorable, the extras are named.
+    const result = await readArchive(zipSync({ ...files, 'extra.bin': strToU8('y'), '__MACOSX/._records.json': strToU8('z'), 'attachments/': new Uint8Array(0) }))
     expect(result.ok).toBe(true)
-    if (result.ok) expect(result.warnings.join(' ')).toMatch(/unsafe.*evil|evil.*unsafe|unexpected/)
+    if (result.ok) expect(result.warnings).toEqual(expect.arrayContaining(['Ignored unexpected file: extra.bin', 'Ignored unexpected file: __MACOSX/._records.json']))
+    // A path that would escape a folder is never part of a backup: the whole archive is refused (since 0.4.2).
+    const unsafe = await readArchive(zipSync({ ...files, '../evil.txt': strToU8('x') }))
+    expect(unsafe).toMatchObject({ ok: false, errors: [expect.stringMatching(/unsafe file path \("\.\.\/evil\.txt"\)/)] })
   })
 })
 

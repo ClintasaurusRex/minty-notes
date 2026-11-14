@@ -26,7 +26,7 @@ describe('import format detection and limits', () => {
     expect(titleFromFileName('Pump_spec v2.docx')).toBe('Pump spec v2')
   })
 
-  it('checks a DOCX container without unpacking it (ZIP bombs, wrong ZIPs, macros, damage)', async () => {
+  it('checks a DOCX container before it is converted (ZIP bombs, wrong ZIPs, macros, damage)', async () => {
     expect(await checkDocxContainer('a.docx', makeDocx())).toEqual({ ok: true, macros: false })
     expect(await checkDocxContainer('m.docx', makeDocx({ withMacros: true }))).toEqual({ ok: true, macros: true })
     expect(await checkDocxContainer('photos.zip', zipSync({ 'a.txt': strToU8('x') }))).toMatchObject({ ok: false, reason: expect.stringMatching(/not a Word document/) })

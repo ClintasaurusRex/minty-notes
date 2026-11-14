@@ -2,7 +2,10 @@ import { defineConfig, devices } from '@playwright/test'
 
 // Browser checks run against the production build (service worker included)
 // served by `vite preview` at a stable local origin.
-const PORT = 4173
+// E2E_PORT / E2E_OUT_DIR (optional) run them on another port and build folder,
+// so they can run while your own preview server keeps port 4173 and `dist/`.
+const PORT = Number(process.env.E2E_PORT) || 4173
+const OUT_DIR = process.env.E2E_OUT_DIR ? ` --outDir "${process.env.E2E_OUT_DIR}"` : ''
 
 export default defineConfig({
   testDir: 'e2e',
@@ -23,7 +26,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: `npm run build && npx vite preview --port ${PORT} --strictPort`,
+    command: `npm run build --${OUT_DIR} && npx vite preview --port ${PORT} --strictPort${OUT_DIR}`,
     url: `http://localhost:${PORT}`,
     reuseExistingServer: false,
     timeout: 180_000,

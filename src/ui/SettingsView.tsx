@@ -196,6 +196,7 @@ export function SettingsView() {
       <section className="card" aria-labelledby="restore-h">
         <h2 id="restore-h">Restore</h2>
         <p className="muted">A backup is checked completely before anything changes. Restoring replaces this workspace; the current one is saved first as a safety copy.</p>
+        <p className="muted small">To move a single project to another computer or a coworker, use “Export project” in the project and “Import project” on the Projects screen instead. That adds one project and replaces nothing.</p>
         {readOnly ? (
           <p className="muted">Restore is available in the window that is editing.</p>
         ) : (

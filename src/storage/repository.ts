@@ -64,6 +64,28 @@ export interface EditorOwner {
   at: string
 }
 
+/**
+ * New records and attachment files that are added together, in one
+ * all-or-nothing transaction (used by portable project import). Nothing in it
+ * may replace a stored record: every ID must be unused.
+ */
+export interface ImportBatch {
+  /** Records to add. A `null` value (a deletion) is not allowed in an import. */
+  changes: ChangeSet
+  /** Attachment metadata and bytes to add. */
+  attachments: { meta: AttachmentMeta; blob: Blob }[]
+  /** Existing records the new ones link to; they must still be stored when the batch is written. */
+  mustExist: { store: RecordStoreName | 'attachments'; id: string }[]
+}
+
+/** An import was refused because it would replace a stored record, or a record it links to is gone. */
+export class ImportConflictError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ImportConflictError'
+  }
+}
+
 /** A write was refused because another window has taken over editing. */
 export class OwnershipError extends Error {
   constructor() {
@@ -102,6 +124,12 @@ export interface Repository {
   commit(changes: ChangeSet, at: string, token: string | null): Promise<number>
   /** Make `token` the only writer; earlier owners' commits are refused from now on. */
   claimOwnership(token: string): Promise<void>
+  /**
+   * Add new records and attachment files in one transaction (owner only), and
+   * bump the revision. It never overwrites: if any ID is already stored, or a
+   * record named in `mustExist` is missing, nothing at all is written.
+   */
+  importRecords(batch: ImportBatch, at: string, token: string | null): Promise<number>
   putAttachment(meta: AttachmentMeta, blob: Blob): Promise<void>
   getBlob(id: string): Promise<Blob | undefined>
   getSetting<T>(key: string): Promise<T | undefined>
@@ -181,6 +209,76 @@ export class IdbRepository implements Repository {
     ops.push(settings.put({ lastChangeAt: at, revision } satisfies Activity, SETTINGS.activity))
     await Promise.all([...ops, tx.done])
     return revision
+  }
+
+  async importRecords(batch: ImportBatch, at: string, token: string | null): Promise<number> {
+    const tx = this.db.transaction([...RECORD_STORES, 'attachments', 'blobs', 'settings'], 'readwrite')
+    const refuse = async (err: Error): Promise<never> => {
+      try {
+        tx.abort()
+      } catch {
+        // Already finished or aborted.
+      }
+      await tx.done.catch(() => undefined)
+      throw err
+    }
+    try {
+      const settings = tx.objectStore('settings')
+      const [owner, activity] = await Promise.all([
+        settings.get(SETTINGS.editorOwner) as Promise<EditorOwner | undefined>,
+        settings.get(SETTINGS.activity) as Promise<Partial<Activity> | undefined>,
+      ])
+      if (owner && owner.token !== token) return await refuse(new OwnershipError())
+
+      // Checked inside the transaction that writes, so nothing can change in between.
+      const present = (store: RecordStoreName | 'attachments' | 'blobs', id: string) => tx.objectStore(store).getKey(id) as Promise<string | undefined>
+      const fresh: { store: RecordStoreName | 'attachments' | 'blobs'; id: string }[] = []
+      for (const name of RECORD_STORES) {
+        for (const [id, value] of batch.changes[name] as Map<string, { id: string } | null>) {
+          if (!value || value.id !== id) return await refuse(new ImportConflictError('The import contains an invalid record. Nothing was imported.'))
+          fresh.push({ store: name, id })
+        }
+      }
+      for (const a of batch.attachments) fresh.push({ store: 'attachments', id: a.meta.id }, { store: 'blobs', id: a.meta.id })
+      const [taken, linked] = await Promise.all([Promise.all(fresh.map((f) => present(f.store, f.id))), Promise.all(batch.mustExist.map((m) => present(m.store, m.id)))])
+      if (taken.some((key) => key !== undefined)) return await refuse(new ImportConflictError('The import would replace something that is already in this workspace. Nothing was imported.'))
+      if (linked.some((key) => key === undefined)) return await refuse(new ImportConflictError('Something the import links to is no longer in this workspace. Nothing was imported; try again.'))
+
+      // `add` (never `put`): the browser itself refuses an existing key and aborts everything.
+      const ops: Promise<unknown>[] = []
+      // If one write fails, the others are aborted too; their rejections are expected, not unhandled.
+      const track = (op: Promise<unknown>) => {
+        op.catch(() => undefined)
+        ops.push(op)
+      }
+      for (const name of RECORD_STORES) {
+        const store = tx.objectStore(name)
+        for (const value of (batch.changes[name] as Map<string, { id: string } | null>).values()) track(store.add(value as never))
+      }
+      for (const a of batch.attachments) {
+        track(tx.objectStore('blobs').add(a.blob, a.meta.id))
+        track(tx.objectStore('attachments').add(a.meta))
+      }
+      const revision = normalizeActivity(activity).revision + 1
+      track(settings.put({ lastChangeAt: at, revision } satisfies Activity, SETTINGS.activity))
+      await Promise.all([...ops, tx.done])
+      return revision
+    } catch (err) {
+      if (err instanceof OwnershipError || err instanceof ImportConflictError) throw err
+      // A failed write (quota, constraint, closed database) aborts the whole transaction.
+      try {
+        tx.abort()
+      } catch {
+        // Already aborted by the failed request.
+      }
+      const txError = await tx.done.then(
+        () => null,
+        (e: unknown) => e,
+      )
+      // Report the write that failed, not the aborts it caused.
+      const aborted = (err as { name?: string } | null)?.name === 'AbortError'
+      throw aborted && txError ? txError : err
+    }
   }
 
   async claimOwnership(token: string): Promise<void> {
@@ -284,7 +382,7 @@ function normalizeActivity(a: Partial<Activity> | undefined): Activity {
 /** Human-readable description of a storage failure. Never implies success. */
 export function describeStorageError(err: unknown): string {
   const name = err instanceof DOMException || err instanceof Error ? err.name : ''
-  if (name === 'OwnershipError') return (err as Error).message
+  if (name === 'OwnershipError' || name === 'ImportConflictError') return (err as Error).message
   if (name === 'QuotaExceededError') {
     return 'The browser has run out of storage space for Minty Notes. Free up disk space or download a backup.'
   }

@@ -63,7 +63,7 @@ export function pageLinkState(pageId: string, pages: Record<string, Page>): { st
 /** Tooltip text for a page link. */
 export function pageLinkTooltip(pageId: string, pages: Record<string, Page>): string {
   const { state, title } = pageLinkState(pageId, pages)
-  if (state === 'missing') return 'Linked page was deleted forever'
+  if (state === 'missing') return 'Linked page is not available (deleted forever, or not included when this project was imported)'
   if (state === 'trashed') return `Linked page “${title}” is in the Trash`
   return `Linked page: “${title}” — Ctrl+click or Alt+Enter to open`
 }
