@@ -214,7 +214,7 @@ test('VTScada job: references, files, tasks, note links, templates, archive, bac
   await page.keyboard.type('Hillside checkout pending')
   await waitSaved(page)
   await openProject(page, 'Riverside WTP SCADA upgrade')
-  await page.locator('.navigator').getByRole('button', { name: /Commissioning notes/ }).click()
+  await page.locator('.navigator .nav-page').filter({ hasText: /Commissioning notes/ }).click()
   await expect(page.locator('.obj-text')).toHaveText('PLC-2 I/O checkout: 48 of 52 points verified')
   await page.getByTestId('rail-settings').click()
   await expect(page.getByTestId('template-row')).toContainText('Project template · 1 note · 3 tasks')
@@ -322,7 +322,7 @@ test('task due dates cannot be corrupted by a mistyped year; note templates; del
   expect(stored.links).toBe(1)
 
   // Trash the note: the task shows it as in the Trash; deleting it forever removes the link.
-  await page.locator('.navigator').getByRole('button', { name: /Wiring notes/ }).click()
+  await page.locator('.navigator .nav-page').filter({ hasText: /Wiring notes/ }).click()
   await page.locator('.page-header').getByRole('button', { name: 'Trash', exact: true }).click()
   await openProject(page, 'Typo job', 'tasks')
   await card(page, 'Pull wire').locator('.task-title-btn').click()
@@ -334,7 +334,7 @@ test('task due dates cannot be corrupted by a mistyped year; note templates; del
   await expect(card(page, 'Pull wire')).not.toContainText('note')
   // The template outlives the deleted page (and the Inbox copy is untouched).
   await page.getByTestId('rail-inbox').click()
-  await page.locator('.navigator').getByRole('button', { name: /Wiring notes/ }).click()
+  await page.locator('.navigator .nav-page').filter({ hasText: /Wiring notes/ }).click()
   await expect(page.locator('.obj-text')).toHaveText('Label both ends of every wire')
   await openProject(page, 'Typo job', 'tasks')
   // Delete the task itself.

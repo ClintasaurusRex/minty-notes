@@ -249,7 +249,7 @@ test.describe('backup folder (simulated directory handle)', () => {
     await page.getByRole('button', { name: 'Back up now' }).click()
     await expect.poll(async () => (await listFolder(page)).length).toBe(2)
     files = await listFolder(page)
-    expect(files.every((f) => /^minty-notes-backup-\d{8}-\d{6}Z(-\d+)?\.zip$/.test(f.name))).toBe(true)
+    expect(files.every((f) => /^minty-notes-backup-\d{8}-\d{4}(-\d+)?\.zip$/.test(f.name))).toBe(true)
   })
 
   test('a write failure keeps older snapshots and reports the problem', async ({ page }) => {
@@ -269,6 +269,49 @@ test.describe('backup folder (simulated directory handle)', () => {
     })
     await page.getByRole('button', { name: 'Back up now' }).click()
     await expect(page.getByTestId('backup-error')).toContainText('disk is full')
-    expect(await listFolder(page)).toEqual(before)
+    // Nothing is deleted; the attempt may leave only its own empty file, which the message names.
+    const after = await listFolder(page)
+    for (const file of before) expect(after).toContainEqual(file)
+    const added = after.filter((f) => !before.some((b) => b.name === f.name))
+    expect(added.map((f) => f.size)).toEqual([0])
+    await expect(page.getByTestId('backup-error')).toContainText(`The file ${added[0].name} in the backup folder could not be confirmed as this backup`)
+  })
+
+  test('retention removes only snapshots this browser wrote and verified; unverifiable files stay and are reported', async ({ page }) => {
+    // Real OPFS files, real writes, read-back hashing and the IndexedDB ledger; only the picker is simulated.
+    await page.goto('/')
+    await page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory()
+      const dir = await root.getDirectoryHandle('Dropbox-Backups', { create: true })
+      const put = async (name: string, bytes: Uint8Array) => {
+        const w = await (await dir.getFileHandle(name, { create: true })).createWritable()
+        await w.write(bytes as Uint8Array<ArrayBuffer>)
+        await w.close()
+      }
+      await put('minty-notes-backup-20200101-0000.zip', new Uint8Array()) // interrupted write
+      await put('minty-notes-backup-20200101-000000Z.zip', new Uint8Array([0x50, 0x4b, 3, 4, 9, 9])) // corrupt, old format
+      await put('minty-notes-backup-20991231-2359.zip', new Uint8Array(2048).fill(7)) // future-dated junk
+    })
+    const junk = await listFolder(page)
+    expect(junk).toHaveLength(3)
+    await newQuickNote(page)
+    await addTextBox(page, 'Retention note')
+    await waitSaved(page)
+    await page.getByRole('button', { name: 'Settings' }).click()
+    await page.getByRole('button', { name: 'Choose backup folder…' }).click()
+    await expect(page.getByTestId('last-backup')).toContainText('minty-notes-backup-')
+    const recorded = [((await page.getByTestId('last-backup').textContent()) ?? '').split(' — ')[1]]
+    for (let i = 0; i < 10; i++) {
+      await page.getByRole('button', { name: 'Back up now' }).click()
+      await expect(page.getByTestId('last-backup')).not.toContainText(recorded.at(-1)!)
+      recorded.push(((await page.getByTestId('last-backup').textContent()) ?? '').split(' — ')[1])
+    }
+    const files = await listFolder(page)
+    // Eleven recorded backups, keep 10: exactly the first recorded one was removed.
+    expect(files.map((f) => f.name).sort()).toEqual([...junk.map((f) => f.name), ...recorded.slice(1)].sort())
+    for (const file of junk) expect(files).toContainEqual(file)
+    await expect(page.getByTestId('backup-cleanup-warning')).toContainText('holds 13 snapshots, more than the 10 Minty Notes keeps')
+    await expect(page.getByTestId('backup-cleanup-warning')).toContainText('3 were not written and verified by Minty Notes in this browser')
+    await expect(page.getByTestId('backup-error')).toHaveCount(0)
   })
 })

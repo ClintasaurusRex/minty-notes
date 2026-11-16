@@ -186,6 +186,7 @@ const FIELD_LABELS: Record<string, string> = {
   trashedAt: 'Trash state',
   archivedAt: 'Archive state',
   order: 'Order',
+  noteSort: 'Note sorting',
   notebookId: 'Notebook',
   customer: 'Customer',
   site: 'Site',

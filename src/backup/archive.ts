@@ -1,4 +1,6 @@
-import { zip, type AsyncZippable } from 'fflate'
+import type { AsyncZippable } from 'fflate'
+import { zipAsync } from './archiveZip'
+export { zipAsync } from './archiveZip'
 import { isDateOnly } from '../domain/dates'
 import { validateMarkup } from '../domain/markup'
 import { pageLinkIds } from '../domain/pageLink'
@@ -96,10 +98,6 @@ export function attachmentExtension(mimeType: string): string {
 
 function attachmentPath(meta: AttachmentMeta): string {
   return `attachments/${meta.id}${attachmentExtension(meta.mimeType)}`
-}
-
-export function zipAsync(files: AsyncZippable): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => zip(files, (err, data) => (err ? reject(err) : resolve(data))))
 }
 
 /** Build a complete backup archive from workspace records and attachment bytes. */
@@ -318,6 +316,8 @@ export function validateRecords(raw: unknown, c: Checker): WorkspaceRecords | nu
     if (!checkCommon(c, 'Project', p, i)) return
     const ok =
       isStr(p.name) &&
+      (p.noteSort === 'last-edited' || p.noteSort === 'manual') &&
+      (p.manualOrderSet === undefined || typeof p.manualOrderSet === 'boolean') &&
       isStr(p.customer) &&
       isStr(p.site) &&
       isStr(p.jobNumber) &&
@@ -548,6 +548,13 @@ export function migrateRecordsV3toV4(raw: unknown): void {
   if (isObj(raw.workspace) && isNum(raw.workspace.formatVersion) && raw.workspace.formatVersion < 4) raw.workspace = { ...raw.workspace, formatVersion: 4 }
 }
 
+/** Format 4 → 5: existing projects retain their dynamic Last edited default. */
+export function migrateRecordsV4toV5(raw: unknown): void {
+  if (!isObj(raw)) return
+  if (Array.isArray(raw.projects)) raw.projects = raw.projects.map((p: unknown) => isObj(p) ? { ...p, noteSort: 'last-edited' } : p)
+  if (isObj(raw.workspace) && isNum(raw.workspace.formatVersion) && raw.workspace.formatVersion < 5) raw.workspace = { ...raw.workspace, formatVersion: 5 }
+}
+
 /**
  * App 0.2.0 stored any value Chrome's date field produced, including a
  * five-digit year (e.g. `20261-12-15`), which this validation rejects. So a
@@ -628,6 +635,7 @@ export async function readArchive(bytes: Uint8Array): Promise<ArchiveValidation>
   }
   if (m.formatVersion <= 2) migrateRecordsV2toV3(raw)
   if (m.formatVersion <= 3) migrateRecordsV3toV4(raw)
+  if (m.formatVersion <= 4) migrateRecordsV4toV5(raw)
   repairDueDates(raw, warnings)
   const checker = new Checker(errors)
   const records = validateRecords(raw, checker)

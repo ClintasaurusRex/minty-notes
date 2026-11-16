@@ -20,7 +20,7 @@ const STATUS_RANK = { active: 0, 'on-hold': 1, planned: 2, complete: 3 }
 function ProjectCard({ project }: { project: Project }) {
   const nav = useNav()
   const data = useWorkspace((s) => s.data)
-  const notes = projectNotes(project.id, data.pages)
+  const notes = projectNotes(project.id, data.pages, project.noteSort)
   const refs = projectReferences(project, data)
   const due = project.dueDate ? dueState(project.dueDate) : null
   const next = nextTask(Object.values(data.tasks), project.id)

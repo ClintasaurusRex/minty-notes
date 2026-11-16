@@ -158,7 +158,7 @@ describe('imported drafts in the workspace', () => {
     const validated = await readArchive(zipSync(zip))
     if (!validated.ok) throw new Error(validated.errors.join('; '))
     expect(validated.summary.formatVersion).toBe(3)
-    expect(validated.records.workspace.formatVersion).toBe(4)
+    expect(validated.records.workspace.formatVersion).toBe(5)
     expect(validated.records.pages[0].importedFrom).toBeUndefined()
   })
 })

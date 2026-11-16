@@ -92,6 +92,9 @@ function cleanProject(p: Project): Project {
   return {
     id: p.id,
     name: p.name,
+    noteSort: p.noteSort,
+    // An established Manual order travels even while Last edited is selected.
+    ...(p.manualOrderSet === true ? { manualOrderSet: true } : {}),
     customer: p.customer,
     site: p.site,
     jobNumber: p.jobNumber,

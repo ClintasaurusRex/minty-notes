@@ -111,7 +111,7 @@ test('representative technical project: imported narrative, table, code, page li
   await fresh.getByTestId('restore-file').setInputFiles(backupPath)
   const review = fresh.getByTestId('restore-review')
   await expect(review).toContainText('passed every check')
-  await expect(review).toContainText('format 4')
+  await expect(review).toContainText('format 5')
   await fresh.getByRole('button', { name: 'Replace workspace' }).click()
   await fresh.getByRole('button', { name: 'Done' }).click()
 

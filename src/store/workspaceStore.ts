@@ -27,9 +27,9 @@ import { instantiateNote, instantiateProject, pruneTemplateRefs, templateFromPag
 import { docToPlainText } from '../domain/richtext'
 import { pageLinkIds } from '../domain/pageLink'
 import { markupText } from '../domain/markup'
-import { isLinkedTo, keepExisting, ownerProjectId } from '../domain/references'
+import { hasManualOrder, isLinkedTo, keepExisting, ownerProjectId, projectNotes } from '../domain/references'
 import { normalize, type PageText } from '../domain/search'
-import { changeSetSize, describeStorageError, emptyChangeSet, type ChangeSet, type ImportBatch, type Repository } from '../storage/repository'
+import { changeSetSize, describeStorageError, emptyChangeSet, OwnershipError, SETTINGS, type ChangeSet, type EditorOwner, type ImportBatch, type Repository } from '../storage/repository'
 import { PageHistory, type HistoryEntry, type ObjectChange } from './history'
 import { isIntendedChange, reconcileHeldChanges, type HeldChange, type ReconcileResult, type RecordKind } from './reconcile'
 
@@ -243,6 +243,41 @@ export class WorkspaceStore {
   /** True while this window is allowed to write (it may still be frozen read-only). */
   get isOwner(): boolean {
     return this.owner
+  }
+
+  /**
+   * Check this window's token against the stored editor owner — the same
+   * fence `commit` applies — for work that is not a record commit (backup
+   * folder writes and retention). `isOwner` can be stale until the lock-loss
+   * signal arrives; storage cannot. A mismatch revokes ownership exactly as a
+   * refused commit would. A workspace that never recorded an owner accepts any
+   * window, matching `commit`.
+   */
+  async confirmOwnership(): Promise<boolean> {
+    if (!this.owner) return false
+    const token = this.token
+    const stored = await this.repo.getSetting<EditorOwner>(SETTINGS.editorOwner)
+    // Ownership may have changed while storage was read.
+    if (!this.owner || this.token !== token) return false
+    if (stored && stored.token !== token) {
+      this.revokeOwnership()
+      return false
+    }
+    return true
+  }
+
+  /**
+   * Atomically update a device setting, fenced by this window's owner token
+   * (backup ledger). A refusal revokes ownership, like a refused commit.
+   */
+  async updateSettingAsOwner<T>(key: string, update: (current: T | undefined) => T): Promise<T> {
+    if (!this.owner) throw new OwnershipError()
+    try {
+      return await this.repo.updateSettingAsOwner(key, update, this.token)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'OwnershipError') this.revokeOwnership()
+      throw err
+    }
   }
 
   /**
@@ -1013,9 +1048,63 @@ export class WorkspaceStore {
     this.assertWritable()
     const p = this.state.data.projects[id]
     if (!p) return
-    const next = { ...p, ...withValidDueDate(patch) }
-    if (JSON.stringify(next) === JSON.stringify(p)) return
-    this.putRecord('projects', { ...next, updatedAt: nowIso() })
+    const clean = { ...withValidDueDate(patch) }
+    const noteSort = clean.noteSort
+    delete clean.noteSort
+    delete clean.manualOrderSet
+    const next = { ...p, ...clean }
+    if (JSON.stringify(next) !== JSON.stringify(p)) this.putRecord('projects', { ...next, updatedAt: nowIso() })
+    // Sorting goes through the one path that establishes a Manual order.
+    if (noteSort !== undefined) this.setProjectNoteSort(id, noteSort)
+  }
+
+  /**
+   * The choice is project data; visual sidebar preferences stay device-local.
+   * The first switch to Manual keeps the notes where Last edited shows them
+   * (only `Page.order` changes, never edit timestamps). After that, Page.order
+   * is the user's Manual order and switching back to Manual restores it.
+   */
+  setProjectNoteSort(projectId: string, sort: Project['noteSort']): void {
+    this.assertWritable()
+    if (sort !== 'last-edited' && sort !== 'manual') return
+    const project = this.state.data.projects[projectId]
+    if (!project || project.trashedAt || project.noteSort === sort) return
+    const established = hasManualOrder(project)
+    if (sort === 'manual' && !established) this.renumberProjectNotes(projectNotes(projectId, this.state.data.pages, project.noteSort))
+    this.putRecord('projects', { ...project, noteSort: sort, manualOrderSet: true, updatedAt: nowIso() })
+  }
+
+  /** Store `notes` as the Manual sequence 1…n. Only changed orders are written; timestamps are untouched. */
+  private renumberProjectNotes(notes: Page[]): void {
+    for (const [i, p] of notes.entries()) if (p.order !== i + 1) this.putPage({ ...p, order: i + 1 })
+  }
+
+  /** Insert before a live owned note, or at the end. No note edit timestamps change. */
+  moveProjectNote(projectId: string, pageId: string, beforeId: string | null): boolean {
+    this.assertWritable()
+    const project = this.state.data.projects[projectId]
+    if (!project || project.trashedAt || pageId === beforeId) return false
+    const notes = projectNotes(projectId, this.state.data.pages, project.noteSort)
+    const page = notes.find((p) => p.id === pageId)
+    if (!page || (beforeId !== null && !notes.some((p) => p.id === beforeId))) return false
+    const next = notes.filter((p) => p.id !== pageId)
+    next.splice(beforeId === null ? next.length : next.findIndex((p) => p.id === beforeId), 0, page)
+    if (next.every((p, i) => p.id === notes[i].id)) return false
+    // The displayed sequence plus this move becomes the Manual order.
+    this.renumberProjectNotes(next)
+    const current = this.state.data.projects[projectId]
+    if (current.noteSort !== 'manual' || current.manualOrderSet !== true) this.putRecord('projects', { ...current, noteSort: 'manual', manualOrderSet: true, updatedAt: nowIso() })
+    return true
+  }
+
+  nudgeProjectNote(projectId: string, pageId: string, direction: 'up' | 'down'): boolean {
+    this.assertWritable()
+    const project = this.state.data.projects[projectId]
+    if (!project) return false
+    const notes = projectNotes(projectId, this.state.data.pages, project.noteSort)
+    const index = notes.findIndex((p) => p.id === pageId)
+    if (index < 0 || (direction === 'up' ? index === 0 : index === notes.length - 1)) return false
+    return this.moveProjectNote(projectId, pageId, direction === 'up' ? notes[index - 1].id : notes[index + 2]?.id ?? null)
   }
 
   /** Archive keeps the complete project (notes, links, details) out of active lists. */
@@ -1589,7 +1678,9 @@ function cleanTaskFields(fields: TaskFields, pages: Record<string, Page>): TaskF
 
 export type ProjectFields = Partial<Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'order' | 'archivedAt' | 'trashedAt'>>
 
-export function newProject(fields: ProjectFields & { name: string }, order: number, at = nowIso()): Project {
+export function newProject(projectFields: ProjectFields & { name: string }, order: number, at = nowIso()): Project {
+  const fields = { ...projectFields }
+  delete fields.manualOrderSet
   return {
     id: newId(),
     customer: '',
@@ -1606,6 +1697,9 @@ export function newProject(fields: ProjectFields & { name: string }, order: numb
     pinnedPageIds: [],
     hiddenPageIds: [],
     ...fields,
+    noteSort: fields.noteSort === 'manual' ? 'manual' : 'last-edited',
+    // A project created in Manual already shows its notes in Page.order.
+    ...(fields.noteSort === 'manual' ? { manualOrderSet: true } : {}),
     name: fields.name.trim() || 'Untitled project',
     order,
     archivedAt: null,

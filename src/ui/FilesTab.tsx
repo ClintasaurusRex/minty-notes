@@ -3,6 +3,7 @@ import { newId, type FileLocation } from '../domain/types'
 import { copyText, guard } from './actions'
 import { IconCopy, IconExternal, IconFolder, IconLink, IconPlus, IconTrash } from './icons'
 import { safeUrl } from './projectFormat'
+import { FolderBrowser } from './FolderBrowser'
 
 /** Guess the kind from what was typed: an http(s) address is a web link, anything else a path. */
 function guessKind(value: string): FileLocation['kind'] {
@@ -106,6 +107,7 @@ export function FilesTab({ projectId }: { projectId: string }) {
           <IconPlus size={14} /> Add another location
         </button>
       )}
+      <FolderBrowser key={projectId} />
     </section>
   )
 }

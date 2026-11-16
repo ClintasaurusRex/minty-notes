@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useAppUpdate, useBackupState, useLockState, useServices, useWorkspace } from '../app/context'
 import { isLinkedTo } from '../domain/references'
 import { applyUpdate } from '../platform/serviceWorker'
@@ -9,6 +9,8 @@ import { HomeView } from './HomeView'
 import { IconAlert, IconCheck, IconHome, IconInbox, IconLeaf, IconNote, IconNotebook, IconPanel, IconProject, IconQuick, IconSearch, IconSettings, IconTasks, IconTrash } from './icons'
 import { NavContext, type Nav, type NavSection, type OpenProjectOptions, type ProjectTab } from './nav'
 import { Navigator } from './Navigator'
+import { NavigationPanel } from './NavigationPanel'
+import { KeyboardHelp } from './KeyboardHelp'
 import { dismissNotice, noticeStore, notify } from './notices'
 import { ImportProjectButton } from './ProjectImportDialog'
 import { ProjectView } from './ProjectView'
@@ -64,7 +66,7 @@ function SaveStatus() {
   const held = useWorkspace((s) => s.heldChanges)
   if (readOnly) {
     return (
-      <span className={`pill ${held > 0 ? 'pill-error' : 'pill-muted'}`} data-testid="save-status" data-status="read-only">
+      <span className={`pill ${held > 0 ? 'pill-error' : 'pill-muted'}`} role="status" data-testid="save-status" data-status="read-only">
         Read-only{held > 0 ? ` · ${held} unsaved` : ''}
       </span>
     )
@@ -108,8 +110,8 @@ function StatusCluster({ onSettings }: { onSettings: () => void }) {
     <div className="status-cluster">
       <SaveStatus />
       {update.supported && (
-        <span className={`pill ${update.offlineReady ? 'pill-muted' : 'pill-muted'}`} data-testid="offline-pill" title={update.offlineReady ? 'All app files are stored for offline use.' : 'Preparing offline use…'}>
-          <span className={`dot ${update.offlineReady ? 'dot-ok' : ''}`} /> {update.offlineReady ? 'Offline ready' : 'Preparing offline…'}
+        <span className={`pill ${update.offlineReady ? 'pill-muted' : 'pill-muted'}`} data-testid="offline-pill" title={update.error ?? (update.offlineReady ? 'All app files are stored for offline use.' : 'Preparing offline use…')}>
+          <span className={`dot ${update.offlineReady ? 'dot-ok' : ''}`} /> {update.offlineReady ? 'Offline ready' : update.error ? 'Offline setup failed' : 'Preparing offline…'}
         </span>
       )}
       <button type="button" className={`pill ${warn ? 'pill-warn' : 'pill-muted'}`} onClick={onSettings} data-testid="backup-pill">
@@ -231,7 +233,7 @@ function Banners({ onSettings }: { onSettings: () => void }) {
       )}
       {update.updateReady && (
         <div className="banner" role="status">
-          A new version of Minty Notes is ready.
+          An updated app build is ready. The version number may be unchanged.
           <button
             type="button"
             className="btn btn-small btn-primary"
@@ -263,7 +265,36 @@ export function App() {
   })
   const [pageId, setPageId] = useState<string | null>(() => readPref('page'))
   const [projectId, setProjectId] = useState<string | null>(() => readPref('project'))
-  const [navOpen, setNavOpen] = useState(() => !isNarrow())
+  const [navOpen, setNavOpen] = useState(() => !isNarrow() && readPref('navigation-collapsed') !== 'true')
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [narrow, setNarrow] = useState(isNarrow)
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 760px)')
+    const change = () => setNarrow(media.matches)
+    media.addEventListener('change', change)
+    return () => media.removeEventListener('change', change)
+  }, [])
+  const navToggle = useRef<HTMLButtonElement>(null)
+  const mainRef = useRef<HTMLElement>(null)
+  // The remembered collapse state is a desktop preference. Opening or closing
+  // the phone overlay is transient and must not overwrite it.
+  const rememberCollapsed = (collapsed: boolean) => {
+    if (!isNarrow()) writePref('navigation-collapsed', String(collapsed))
+  }
+  const toggleNavigation = () => {
+    setNavOpen((open) => {
+      rememberCollapsed(open)
+      return !open
+    })
+  }
+  const closeNavigation = () => {
+    setNavOpen(false)
+    rememberCollapsed(true)
+    requestAnimationFrame(() => navToggle.current?.focus())
+  }
+  const focusMainOnPhone = () => {
+    if (isNarrow()) requestAnimationFrame(() => mainRef.current?.focus())
+  }
   const [projectTab, setProjectTab] = useState<ProjectTab>(() => {
     const saved = readPref('project-tab')
     return saved === 'tasks' || saved === 'files' ? saved : 'overview'
@@ -305,6 +336,7 @@ export function App() {
     setPage(id)
     recordRecent(id, inProject ?? null)
     if (isNarrow()) setNavOpen(false)
+    focusMainOnPhone()
   }
   const openProject = (id: string | null, options: OpenProjectOptions = {}) => {
     setBackStack([])
@@ -315,7 +347,7 @@ export function App() {
     setOpenTaskId(options.taskId ?? null)
     setProject(id)
     setPage(null)
-    if (isNarrow() && id) setNavOpen(false)
+    if (isNarrow() && id) { setNavOpen(false); focusMainOnPhone() }
   }
   const go = (s: NavSection) => {
     setBackStack([])
@@ -369,6 +401,7 @@ export function App() {
       if (isNarrow()) setNavOpen(false)
       setPage(page.id)
       recordRecent(page.id, null)
+      focusMainOnPhone()
     } catch (err) {
       if (err instanceof ReadOnlyError) notify('info', err.message)
       else throw err
@@ -377,7 +410,22 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Not while a modal dialog (e.g. the markup editor) holds unsaved work.
+      // A modal owns its shortcuts.
+      if (document.querySelector('dialog[open]')) return
+      if (e.key === 'Escape' && !e.defaultPrevented && !(e.target instanceof HTMLElement && e.target.closest('input, textarea, select, [contenteditable=true]')) && isNarrow() && navOpen && LIST_SECTIONS.includes(section)) {
+        e.preventDefault()
+        closeNavigation()
+        return
+      }
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key === '/') {
+        e.preventDefault()
+        setHelpOpen(true)
+      }
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'Backslash' && LIST_SECTIONS.includes(section)) {
+        e.preventDefault()
+        toggleNavigation()
+        requestAnimationFrame(() => navToggle.current?.focus())
+      }
       if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'n' && !document.querySelector('dialog[open]')) {
         e.preventDefault()
         quickNote()
@@ -442,6 +490,7 @@ export function App() {
   return (
     <NavContext.Provider value={nav}>
       <div className="app">
+        <a className="skip-link" href="#main-content">Skip to workspace</a>
         <nav className="rail" aria-label="Main">
           <div className="rail-logo" title="Minty Notes">
             <IconLeaf size={22} />
@@ -463,22 +512,26 @@ export function App() {
           </button>
         </nav>
         {listVisible && (
-          <Navigator key={epoch} section={section} pageId={showPage ? pageId : null} projectId={project?.id ?? null} onOpenPage={openPage} onOpenProject={openProject} onQuickNote={quickNote} />
+          <NavigationPanel onCollapse={closeNavigation}>
+            <Navigator key={epoch} section={section} pageId={showPage ? pageId : null} projectId={project?.id ?? null} onOpenPage={openPage} onOpenProject={openProject} onQuickNote={quickNote} />
+          </NavigationPanel>
         )}
-        <main className="main">
+        <main className="main" id="main-content" ref={mainRef} tabIndex={-1} aria-label="Workspace" inert={narrow && listVisible}>
           <div className="topbar">
             {LIST_SECTIONS.includes(section) && (
-              <button type="button" className="icon-btn" aria-label={navOpen ? 'Hide page list' : 'Show page list'} aria-pressed={navOpen} title={navOpen ? 'Hide page list' : 'Show page list'} onClick={() => setNavOpen((v) => !v)}>
+              <button type="button" ref={navToggle} className="icon-btn" aria-controls="navigation-panel" aria-expanded={navOpen} aria-keyshortcuts="Alt+Backslash" aria-label={navOpen ? 'Hide page list' : 'Show page list'} aria-pressed={navOpen} title={navOpen ? 'Hide page list' : 'Show page list'} onClick={toggleNavigation}>
                 <IconPanel />
               </button>
             )}
             <div className="topbar-title">Minty Notes</div>
             <StatusCluster onSettings={() => go('settings')} />
+            <button type="button" className="icon-btn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (Alt+/)" aria-keyshortcuts="Alt+/" onClick={() => setHelpOpen(true)}>?</button>
           </div>
           <Banners onSettings={() => go('settings')} />
           <div className="content">{main}</div>
         </main>
         <Notices />
+        {helpOpen && <KeyboardHelp onClose={() => setHelpOpen(false)} />}
       </div>
     </NavContext.Provider>
   )

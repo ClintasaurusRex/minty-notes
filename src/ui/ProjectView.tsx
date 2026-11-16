@@ -274,7 +274,7 @@ export function ProjectView({ projectId, tab, onTab, openTaskId, onOpenTask }: P
   const taskCount = Object.values(data.tasks).filter((t) => t.projectId === project.id && t.status !== 'done').length
 
   const set = (patch: Partial<Project>) => guard(() => store.updateProject(project.id, patch))
-  const notes = projectNotes(project.id, data.pages)
+  const notes = projectNotes(project.id, data.pages, project.noteSort)
   const refs = projectReferences(project, data)
   const due = project.dueDate ? dueState(project.dueDate) : null
 

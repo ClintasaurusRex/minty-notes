@@ -62,7 +62,7 @@ describe('a backup written by every earlier release restores completely', () => 
       expect(note.tagIds).toEqual([tags[0].id])
     }
     if (format >= 3) expect(Object.values(data.tasks).map((t) => t.title)).toEqual(['Check the alarm list'])
-    expect(data.workspace?.formatVersion).toBe(4)
+    expect(data.workspace?.formatVersion).toBe(5)
 
     // …and the restored workspace backs up and restores again with this version.
     const again = await readArchive((await service.createArchive()).bytes)

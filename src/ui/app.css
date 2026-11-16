@@ -2562,3 +2562,54 @@ a.btn {
   vertical-align: -2px;
   color: var(--warn);
 }
+
+/* Stage 5: a separate, device-local navigation panel. */
+.navigation-panel { position: relative; flex: none; display: flex; flex-direction: column; min-width: 0; background: var(--panel); }
+.navigation-panel .navigator { flex: 1; width: 100%; min-height: 0; }
+.navigation-controls { display: flex; justify-content: flex-end; padding: 6px 12px 0; border-right: 1px solid var(--border); }
+.navigation-resizer { position: absolute; right: -4px; top: 0; bottom: 0; width: 9px; z-index: 2; cursor: col-resize; touch-action: none; }
+.navigation-resizer:hover, .navigation-resizer:focus-visible { background: var(--mint-soft); border-right: 2px solid var(--mint); }
+.navigation-panel.is-resizing { user-select: none; }
+.navigation-backdrop { display: none; }
+.skip-link { position: fixed; left: 8px; top: 8px; z-index: 200; padding: 10px; background: var(--raised); transform: translateY(-150%); }
+.skip-link:focus { transform: none; }
+.main:focus { outline: none; }
+.shortcut-dialog { max-width: 640px; }
+@media (max-width: 760px) {
+  .navigation-panel { position: fixed; left: 58px; top: 0; bottom: 0; z-index: 50; box-shadow: 8px 0 24px #0008; }
+  .navigation-panel .navigator { position: static; box-shadow: none; }
+  .navigation-backdrop { display: block; position: fixed; inset: 0 0 0 58px; background: #0008; border: 0; z-index: 49; }
+  .topbar { height: auto; min-height: 44px; flex-wrap: wrap; gap: 4px; padding: 5px 8px; }
+  .status-cluster { flex-wrap: wrap; gap: 3px; }
+  .pill { font-size: 10px; }
+  .page-header { padding: 8px; gap: 6px; }
+  .page-header-main { min-width: 0; flex-basis: 100%; }
+  .page-header-actions { flex-wrap: wrap; gap: 4px; max-width: 100%; }
+  .move-select select { max-width: 160px; }
+  .project-view, .settings, .search-view, .home-view { padding-left: 10px; padding-right: 10px; }
+  .project-head { flex-wrap: wrap; }
+  .btn-row { flex-wrap: wrap; }
+  .label-row { flex-wrap: wrap; }
+  .label-row input { max-width: 100%; }
+  .keys { grid-template-columns: minmax(0, 1fr); }
+  .keys dt { overflow-wrap: anywhere; }
+}
+@media (forced-colors: active) {
+  .navigation-resizer { border-right: 2px solid ButtonText; }
+}
+
+@media (max-width: 760px) {
+  .toolbar { flex-shrink: 0; }
+  .toolbar .tool-group { flex-wrap: wrap; max-width: 100%; }
+}
+
+/* Available workspace width also shrinks beside an expanded desktop panel. */
+.main { container: workspace / inline-size; }
+@container workspace (max-width: 760px) {
+  .topbar { height: auto; min-height: 44px; flex-wrap: wrap; }
+  .topbar-title { display: none; }
+  .page-header-main { min-width: 0; flex-basis: 100%; }
+  .page-header-actions { flex-wrap: wrap; max-width: 100%; }
+  .toolbar { flex-shrink: 0; }
+  .toolbar .tool-group { flex-wrap: wrap; max-width: 100%; }
+}
