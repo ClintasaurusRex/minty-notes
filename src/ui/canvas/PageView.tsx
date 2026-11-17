@@ -116,7 +116,7 @@ export function PageView({ pageId, projectId = null, onLeave }: { pageId: string
   const focusObject = (id: string) => {
     requestAnimationFrame(() => {
       const el = pageEl?.querySelector<HTMLElement>(`[data-object-id="${id}"]`)
-      el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      el?.scrollIntoView({ block: 'nearest', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
       el?.focus({ preventScroll: true })
     })
   }

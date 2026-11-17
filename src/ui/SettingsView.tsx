@@ -152,6 +152,14 @@ export function SettingsView() {
             <span className="k">Last download</span>
             <span className="v">{state.status.lastDownloadAt ? `${fullDateTime(state.status.lastDownloadAt)} (the browser cannot confirm the file was kept)` : 'never'}</span>
           </div>
+          {state.status.cleanupWarning && (
+            <div>
+              <span className="k">Cleanup</span>
+              <span className="v warn-text" data-testid="backup-cleanup-warning">
+                {relativeTime(state.status.cleanupWarning.at)}: {state.status.cleanupWarning.message}
+              </span>
+            </div>
+          )}
           {state.status.lastError && (
             <div>
               <span className="k">Last problem</span>
@@ -189,7 +197,7 @@ export function SettingsView() {
           </div>
         )}
         <p className="muted small">
-          While Minty Notes is open and there are changes, a new snapshot is written to the folder every {Math.round(backup.intervalMs / 60000)} minutes. The newest {backup.keep} snapshots are kept; an older one is removed only after a new snapshot has been written and checked. Nothing is backed up while the app is closed — when you reopen it, a due backup runs if folder access is still allowed.
+          While Minty Notes is open and there are changes, a new snapshot is written to the folder every {Math.round(backup.intervalMs / 60000)} minutes. The newest {backup.keep} snapshots that Minty Notes wrote and checked in this browser are kept. An older one is removed only after a new snapshot has been written and checked, and only when {backup.keep} newer snapshots still read back exactly as written. Snapshots it cannot verify — from older versions, copied in, from another browser, or left by an interrupted backup — are never deleted automatically. Nothing is backed up while the app is closed — when you reopen it, a due backup runs if folder access is still allowed.
         </p>
       </section>
 
@@ -273,7 +281,7 @@ export function SettingsView() {
             <span className="k">Persistent storage</span>
             <span className="v" data-testid="persist-state">
               {storage?.persisted === true
-                ? 'Granted — the browser will not clear Minty Notes data to free space.'
+                ? 'Granted — protected from automatic storage eviction. Clearing site data or losing this device can still remove notes; keep backups.'
                 : storage?.persisted === false
                   ? 'Not granted — under severe disk pressure the browser could clear site data. Keep regular backups.'
                   : 'Unknown in this browser.'}
@@ -290,7 +298,7 @@ export function SettingsView() {
           <button type="button" className="btn btn-small" onClick={run(async () => {
             const granted = await requestPersistentStorage()
             setStorage(await readStorageInfo())
-            notify(granted ? 'success' : 'info', granted ? 'Persistent storage granted.' : 'The browser did not grant persistent storage. Installing the app or using it regularly can change this.')
+            notify(granted ? 'success' : 'info', granted ? 'Persistent storage granted.' : 'The browser did not grant persistent storage. This is the browser’s decision. Installing the app or using it regularly may help; keep folder or downloaded backups regardless.')
           })}>
             Ask again
           </button>
@@ -328,7 +336,11 @@ export function SettingsView() {
 
       <section className="card" aria-labelledby="keys-h">
         <h2 id="keys-h">Keyboard</h2>
+        <p className="muted">Open the shortcut reference anywhere with Alt+/ or the ? button in the top bar.</p>
         <dl className="keys">
+          <dt>Alt+\</dt><dd>Show or hide the navigation panel</dd>
+          <dt>Panel divider: ← / →, Home / End</dt><dd>Resize the panel; Enter collapses it</dd>
+          <dt>Project note grip: Alt+↑ / ↓</dt><dd>Reorder notes and choose Manual sorting</dd>
           <dt>Alt+N</dt>
           <dd>New quick note in the Inbox</dd>
           <dt>Ctrl+V</dt>

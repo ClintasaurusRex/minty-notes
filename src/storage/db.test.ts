@@ -1,5 +1,5 @@
 import { openDB } from 'idb'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { readArchive } from '../backup/archive'
 import { BackupService } from '../backup/backupService'
 import { docFromPlainText, docToPlainText, validateRichTextDoc } from '../domain/richtext'
@@ -50,8 +50,8 @@ async function makeLegacyDatabase(version: 1 | 2, withActivity: boolean) {
 }
 
 describe('IndexedDB migrations', () => {
-  it("1 → 5: adds the revision, repairs the trashed orphan, and adds Stage 2 and 3 fields", async () => {
-    expect(DB_VERSION).toBe(5)
+  it("1 → 6: adds the revision, repairs the trashed orphan, and adds Stage 2 and 3 fields", async () => {
+    expect(DB_VERSION).toBe(6)
     const v1 = await makeLegacyDatabase(1, true)
     const repo = await IdbRepository.open(v1.name)
     const index = await repo.loadIndex()
@@ -72,7 +72,7 @@ describe('IndexedDB migrations', () => {
     repo.close()
   })
 
-  it('2 → 5: keeps every Stage 1 note, ID, attachment, and layout; the result backs up and restores', async () => {
+  it('2 → 6: keeps every Stage 1 note, ID, attachment, and layout; the result backs up and restores', async () => {
     const v2 = await makeLegacyDatabase(2, true)
     const repo = await IdbRepository.open(v2.name)
     const store = new WorkspaceStore(repo, { debounceMs: 5, maxWaitMs: 20 })
@@ -132,7 +132,7 @@ describe('IndexedDB migrations', () => {
     after.close()
   })
 
-  it('3 → 5: keeps every Stage 2 record; adds task and template stores and file-location descriptions', async () => {
+  it('3 → 6: keeps every Stage 2 record; adds task and template stores and file-location descriptions', async () => {
     const name = `minty-v3-${Date.now()}-${n++}`
     const db = await openDB<MintyDB>(name, 3, { upgrade: (d) => {
       createV1Stores(d)
@@ -254,15 +254,15 @@ describe('IndexedDB migrations', () => {
     return { name, ...records }
   }
 
-  it('4 → 5: keeps every Stage 3 record unchanged; tables and page links then save, back up, and restore', async () => {
+  it('4 → 6: adds default project sorting and keeps other Stage 3 records unchanged; tables and page links then save, back up, and restore', async () => {
     const v4 = await makeStage3Database()
     const repo = await IdbRepository.open(v4.name)
     const { records, revision } = await repo.readAll()
     expect(revision).toBe(99)
     expect(records.workspace).toMatchObject({ workspaceId: 'ws-stage3', formatVersion: FORMAT_VERSION })
-    expect(FORMAT_VERSION).toBe(4)
-    // Byte-for-byte the same records: no Stage 3 record is rewritten by the upgrade.
-    expect(records.projects).toEqual([v4.project])
+    expect(FORMAT_VERSION).toBe(5)
+    // Project sorting defaults to Last edited; all other record content is unchanged.
+    expect(records.projects).toEqual([{ ...v4.project, noteSort: 'last-edited' }])
     expect(records.tasks).toEqual([v4.task])
     expect(records.templates).toEqual([v4.template])
     expect(records.categories).toEqual([v4.category])
@@ -287,7 +287,7 @@ describe('IndexedDB migrations', () => {
     const { bytes } = await new BackupService(store, { appVersion: 'test', folderSupported: false }).createArchive()
     const validated = await readArchive(bytes)
     if (!validated.ok) throw new Error(validated.errors.join('; '))
-    expect(validated.summary.formatVersion).toBe(4)
+    expect(validated.summary.formatVersion).toBe(5)
     const clean = await freshStore()
     await clean.store.becomeEditor()
     await new BackupService(clean.store, { appVersion: 'test', folderSupported: false }).restore(validated)
@@ -313,5 +313,39 @@ describe('IndexedDB migrations', () => {
     expect(await after.get('settings', 'workspace')).toMatchObject({ formatVersion: 3 })
     expect(await after.getAll('tasks')).toEqual([v4.task])
     after.close()
+  })
+  it('5 → 6 waits, reports the blocked upgrade, and completes losslessly once an unresponsive older tab closes', async () => {
+    const name = `minty-blocked-${n++}`
+    const at = '2026-11-01T08:00:00.000Z'
+    const project = { id: newId(), name: 'Pump station', customer: '', jobNumber: '', status: 'active', fileLocations: [], createdAt: at, updatedAt: at, archivedAt: null, trashedAt: null }
+    const page = { id: newId(), title: 'Wiring', location: { kind: 'project', projectId: project.id }, order: 1, width: 1200, createdAt: at, updatedAt: at, trashedAt: null }
+    // An older tab that cannot respond to versionchange (frozen or busy): it never closes.
+    const old = await openDB<MintyDB>(name, 5, { upgrade(d) { createV1Stores(d); createV3Stores(d); createV4Stores(d) } })
+    await old.put('projects', project as never)
+    await old.put('pages', page as never)
+    await old.put('settings', { formatVersion: 4 } as never, 'workspace')
+    await old.put('settings', { revision: 7, lastChangeAt: at } as never, 'activity')
+    let blocked = 0
+    let opened: IdbRepository | null = null
+    const pending = IdbRepository.open(name, { onUpgradeBlocked: () => void blocked++ }).then((r) => (opened = r))
+    await vi.waitFor(() => expect(blocked).toBe(1))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(opened).toBeNull() // still waiting: no half-open repository, no migration yet
+    // The older tab still reads its complete, unmigrated data while it holds the connection.
+    expect(old.version).toBe(5)
+    expect(await old.getAll('projects')).toEqual([project])
+    expect(await old.get('settings', 'workspace')).toEqual({ formatVersion: 4 })
+    old.close() // the user closes the older tab
+    const repo = await pending
+    const { records, revision } = await repo.readAll()
+    expect(records.projects).toEqual([{ ...project, noteSort: 'last-edited' }])
+    expect(records.pages).toEqual([page])
+    expect(records.workspace.formatVersion).toBe(FORMAT_VERSION)
+    expect(revision).toBe(7)
+    expect(blocked).toBe(1)
+    repo.close()
+    const check = await openDB(name)
+    expect(check.version).toBe(DB_VERSION)
+    check.close()
   })
 })

@@ -243,7 +243,7 @@ async function openProjectNote(page: Page, project: string, note: string) {
   const back = page.getByRole('button', { name: /All projects/ })
   if (await back.isVisible()) await back.click()
   await page.locator('.navigator').getByRole('button', { name: new RegExp(project) }).click()
-  await page.locator('.navigator').getByRole('button', { name: new RegExp(note) }).click()
+  await page.locator('.navigator .nav-page').filter({ hasText: new RegExp(note) }).click()
   await expect(page.getByLabel('Page title')).toHaveValue(note)
 }
 

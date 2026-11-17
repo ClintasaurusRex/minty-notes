@@ -1,0 +1,233 @@
+{
+  "date": "2026-11-14T15:51:08.913Z",
+  "url": "http://localhost:4375/",
+  "machine": {
+    "cpu": "Intel(R) Core(TM) i7-14700HX",
+    "logicalCpus": 28,
+    "ramGiB": 31.1,
+    "node": "v24.18.0",
+    "chromium": "153.0.8010.12"
+  },
+  "fixture": {
+    "projects": 50,
+    "tasks": 1000,
+    "templates": 0,
+    "categories": 0,
+    "tags": 0,
+    "notebooks": 0,
+    "sections": 0,
+    "pages": 1000,
+    "objects": 1109,
+    "attachments": 25,
+    "attachmentBytes": 270801670,
+    "backupBytes": 270850990,
+    "largeImages": 10,
+    "heavyObjects": 100,
+    "heavyImages": 15,
+    "docxBytes": 27007777,
+    "downloadedBackupBytes": 270853625,
+    "projectPackageBytes": 270814497
+  },
+  "timings": {
+    "emptyStartup": {
+      "ms": 155.4,
+      "maxTimerGapMs": 48.5
+    },
+    "initialRestoreValidation": {
+      "ms": 623
+    },
+    "initialRestoreCommit": {
+      "ms": 216.4
+    },
+    "initialFixtureRestore": {
+      "ms": 907,
+      "maxTimerGapMs": 416.9
+    },
+    "workspaceStartup": {
+      "ms": 163.8,
+      "maxTimerGapMs": 32.6
+    },
+    "projectNavigation": {
+      "ms": 130.1,
+      "maxTimerGapMs": 58.6
+    },
+    "searchPreparationAndQuery": {
+      "ms": 224.8,
+      "maxTimerGapMs": 32.5
+    },
+    "indexedSearchQuery": {
+      "ms": 15.4,
+      "maxTimerGapMs": 20.7
+    },
+    "heavyPageOpen": {
+      "ms": 374.7,
+      "maxTimerGapMs": 283.5
+    },
+    "typing20Characters": {
+      "ms": 124.7,
+      "maxTimerGapMs": 83.2
+    },
+    "drag40Moves": {
+      "ms": 669,
+      "maxTimerGapMs": 29.7
+    },
+    "backupDownload": {
+      "ms": 1875.8,
+      "maxTimerGapMs": 641.2
+    },
+    "cleanRestoreValidation": {
+      "ms": 654.3
+    },
+    "cleanRestoreCommit": {
+      "ms": 224.7
+    },
+    "cleanWorkspaceRestore": {
+      "ms": 941.4,
+      "maxTimerGapMs": 431.4
+    },
+    "projectExportPreview": {
+      "ms": 41.5,
+      "maxTimerGapMs": 31.5
+    },
+    "projectPackageBuildAndVerify": {
+      "ms": 2226.1,
+      "maxTimerGapMs": 1189.1
+    },
+    "projectPackageValidation": {
+      "ms": 560.5,
+      "maxTimerGapMs": 406.4
+    },
+    "projectPackageImport": {
+      "ms": 96.5,
+      "maxTimerGapMs": 26.5
+    },
+    "largeDocxImport": {
+      "ms": 1229.1,
+      "maxTimerGapMs": 198.3
+    }
+  },
+  "memory": {
+    "emptyStartup": {
+      "usedSize": 4397364,
+      "totalSize": 6266880,
+      "embedderHeapUsedSize": 2132320,
+      "backingStorageSize": 1388041,
+      "harnessRss": 519536640
+    },
+    "initialFixtureRestore": {
+      "usedSize": 11725292,
+      "totalSize": 19111936,
+      "embedderHeapUsedSize": 5812024,
+      "backingStorageSize": 292739721,
+      "harnessRss": 521601024
+    },
+    "workspaceStartup": {
+      "usedSize": 6907988,
+      "totalSize": 22904832,
+      "embedderHeapUsedSize": 2083784,
+      "backingStorageSize": 291841823,
+      "harnessRss": 524582912
+    },
+    "projectNavigation": {
+      "usedSize": 8418760,
+      "totalSize": 22904832,
+      "embedderHeapUsedSize": 5048768,
+      "backingStorageSize": 291849960,
+      "harnessRss": 527138816
+    },
+    "searchPreparationAndQuery": {
+      "usedSize": 12950748,
+      "totalSize": 24477696,
+      "embedderHeapUsedSize": 5840720,
+      "backingStorageSize": 291851264,
+      "harnessRss": 528744448
+    },
+    "indexedSearchQuery": {
+      "usedSize": 8666464,
+      "totalSize": 26312704,
+      "embedderHeapUsedSize": 5848080,
+      "backingStorageSize": 1403238,
+      "harnessRss": 529432576
+    },
+    "heavyPageOpen": {
+      "usedSize": 18657804,
+      "totalSize": 55934976,
+      "embedderHeapUsedSize": 5672680,
+      "backingStorageSize": 1414575,
+      "harnessRss": 531726336
+    },
+    "typing20Characters": {
+      "usedSize": 22425652,
+      "totalSize": 55934976,
+      "embedderHeapUsedSize": 7690792,
+      "backingStorageSize": 1418801,
+      "harnessRss": 531263488
+    },
+    "drag40Moves": {
+      "usedSize": 32241664,
+      "totalSize": 56459264,
+      "embedderHeapUsedSize": 10332992,
+      "backingStorageSize": 1419007,
+      "harnessRss": 531263488
+    },
+    "backupDownload": {
+      "usedSize": 17180092,
+      "totalSize": 56721408,
+      "embedderHeapUsedSize": 3038200,
+      "backingStorageSize": 544886032,
+      "harnessRss": 531263488
+    },
+    "cleanWorkspaceRestore": {
+      "usedSize": 11786252,
+      "totalSize": 19374080,
+      "embedderHeapUsedSize": 5809848,
+      "backingStorageSize": 293733705,
+      "harnessRss": 531324928
+    },
+    "projectExportPreview": {
+      "usedSize": 17960992,
+      "totalSize": 56721408,
+      "embedderHeapUsedSize": 5563976,
+      "backingStorageSize": 544887084,
+      "harnessRss": 531324928
+    },
+    "projectPackageBuildAndVerify": {
+      "usedSize": 21092964,
+      "totalSize": 56721408,
+      "embedderHeapUsedSize": 4047448,
+      "backingStorageSize": 549323001,
+      "harnessRss": 531324928
+    },
+    "projectPackageValidation": {
+      "usedSize": 5360944,
+      "totalSize": 9936896,
+      "embedderHeapUsedSize": 1856384,
+      "backingStorageSize": 277224393,
+      "harnessRss": 532013056
+    },
+    "projectPackageImport": {
+      "usedSize": 6816924,
+      "totalSize": 10461184,
+      "embedderHeapUsedSize": 2619328,
+      "backingStorageSize": 277231937,
+      "harnessRss": 532013056
+    },
+    "largeDocxImport": {
+      "usedSize": 25369216,
+      "totalSize": 93159424,
+      "embedderHeapUsedSize": 9607072,
+      "backingStorageSize": 82625716,
+      "harnessRss": 505339904
+    }
+  },
+  "errors": [],
+  "artifacts": "/tmp/minty-stage5-performance-R0VHc4",
+  "fullBackupRoundTrip": "Every record table digest and all attachment SHA-256 values match",
+  "projectRoundTrip": "20 notes, 20 tasks, every project attachment hash matches; fresh IDs checked by existing portability suite",
+  "docx": {
+    "textBoxes": 50,
+    "images": 1
+  },
+  "finishedAt": "2026-11-14T15:51:23.458Z",
+  "note": "One engineering observation, no CPU throttling; memory sampled after operations, not process peaks. Fixture/download bytes are temporary, never committed."
+}

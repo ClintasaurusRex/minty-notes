@@ -68,7 +68,7 @@ test('capture, arrange, reload, back up, and restore into a clean workspace', as
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Download backup' }).click()
   const download = await downloadPromise
-  expect(download.suggestedFilename()).toMatch(/^minty-notes-backup-\d{8}-\d{6}Z\.zip$/)
+  expect(download.suggestedFilename()).toMatch(/^minty-notes-backup-\d{8}-\d{4}\.zip$/)
   const backupPath = testInfo.outputPath('backup.zip')
   await download.saveAs(backupPath)
 

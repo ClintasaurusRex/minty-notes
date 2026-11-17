@@ -3,10 +3,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { docFromPlainText } from '../domain/richtext'
 import { newId, nowIso, type ImageObject, type TextObject } from '../domain/types'
 import { freshStore, PNG_1x1 } from '../test/fixtures'
+import { WorkspaceStore } from '../store/workspaceStore'
 import { buildStage1Archive, toStage1Records } from '../test/legacy'
 import { buildArchive, readArchive, sha256Hex } from './archive'
 import { BackupService } from './backupService'
 import { isSnapshotName, snapshotFileName } from './folder'
+
+/** A snapshot name in the pre-0.5.0 UTC format (seconds resolution), as older versions wrote it. */
+function legacyName(date: Date): string {
+  return `minty-notes-backup-${date.toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}Z.zip`
+}
 
 /** Simulated directory handle. It exercises our logic, not Chrome's real permission UI. */
 class FakeDir {
@@ -15,6 +21,8 @@ class FakeDir {
   permission: PermissionState = 'granted'
   requestResult: PermissionState = 'granted'
   failWrite: Error | null = null
+  truncateReadBack = false
+  beforeClose: (() => Promise<void>) | null = null
   async queryPermission() {
     return this.permission
   }
@@ -43,12 +51,13 @@ class FakeDir {
             pending = b
           },
           close: async () => {
+            await this.beforeClose?.()
             this.files.set(name, pending ?? new Uint8Array())
           },
           abort: async () => undefined,
         }
       },
-      getFile: async () => new Blob([this.files.get(name)! as Uint8Array<ArrayBuffer>]),
+      getFile: async () => new Blob([(this.truncateReadBack ? this.files.get(name)!.subarray(0, 1) : this.files.get(name)!) as Uint8Array<ArrayBuffer>]),
     }
   }
 }
@@ -219,37 +228,185 @@ describe('archive validation', () => {
   })
 })
 
+/** Make `n` real snapshots through the service, each after a saved change, so each is recorded in the ledger. */
+async function recordedBackups(service: BackupService, store: WorkspaceStore, pageId: string, n: number): Promise<string[]> {
+  const names: string[] = []
+  for (let i = 0; i < n; i++) {
+    store.renamePage(pageId, `Revision ${names.length + 1} ${Math.random()}`)
+    await store.flush()
+    const result = await service.backupNow()
+    if (!result.ok) throw new Error(result.message)
+    names.push(result.fileName)
+  }
+  return names
+}
+
 describe('backup folder snapshots (simulated directory handle)', () => {
-  it('writes a verified snapshot and keeps only the newest 10', async () => {
+  it.each(['write', 'close', 'size verification'] as const)('preserves existing snapshot bytes and last success after failed %s, and a verified retry removes no unrecorded file', async (phase) => {
+    const { store, repo, page } = await sampleWorkspace()
+    const dir = new FakeDir()
+    const { service } = serviceFor(store, dir)
+    await service.init()
+    expect(await service.chooseFolder()).toMatchObject({ ok: true })
+    const lastSuccess = service.getState().status.lastBackup
+    for (let i = 1; i <= 12; i++) dir.files.set(snapshotFileName(new Date(Date.UTC(2026, 0, i))), new Uint8Array([i]))
+    dir.files.set('keep.txt', new Uint8Array([42]))
+    const before = [...dir.files.entries()]
+    store.renamePage(page.id, 'Needs a new backup')
+    await store.flush()
+    const remove = vi.spyOn(dir, 'removeEntry')
+    const fail = new DOMException('disk full', 'QuotaExceededError')
+    if (phase === 'write') dir.failWrite = fail
+    if (phase === 'close') dir.beforeClose = async () => { throw fail }
+    if (phase === 'size verification') dir.truncateReadBack = true
+
+    const failed = await service.backupNow()
+    expect(failed).toMatchObject({ ok: false, message: expect.stringMatching(phase === 'size verification' ? /wrong size/ : /disk is full/) })
+    // A failure deletes nothing: every existing file is unchanged, and the attempt's own
+    // output (empty, or unverified) stays under a new name that the message reports.
+    expect(remove).not.toHaveBeenCalled()
+    for (const [name, bytes] of before) expect(dir.files.get(name)).toEqual(bytes)
+    const leftover = [...dir.files.keys()].filter((name) => !before.some(([old]) => old === name))
+    expect(leftover).toHaveLength(1)
+    expect(failed).toMatchObject({ message: expect.stringContaining(`The file ${leftover[0]} in the backup folder could not be confirmed`) })
+    expect(service.getState().status.lastBackup).toEqual(lastSuccess)
+    expect(service.getState().status.lastError?.message).toMatch(phase === 'size verification' ? /wrong size/ : /disk is full/)
+    expect(await repo.getSetting('backupStatus')).toEqual(service.getState().status)
+    expect(service.hasUnbackedChanges()).toBe(true)
+    expect(service.getState().running).toBeNull()
+
+    dir.failWrite = null
+    dir.truncateReadBack = false
+    dir.beforeClose = async () => { expect([...dir.files.entries()].filter(([name]) => before.some(([old]) => old === name))).toEqual(before) }
+    remove.mockClear()
+    const result = await service.backupNow()
+    if (!result.ok) throw new Error(result.message)
+    // The 12 copied-in files and the failed attempt's file were never recorded as verified
+    // backups: none of them counts towards the 10, and none is removed.
+    expect(remove).not.toHaveBeenCalled()
+    expect([...dir.files.keys()].sort()).toEqual([...before.map(([name]) => name), leftover[0], result.fileName].sort())
+    for (const [name, bytes] of before) expect(dir.files.get(name)).toEqual(bytes)
+    expect(service.getState().status.cleanupWarning?.message).toMatch(/holds 15 snapshots, more than the 10.*13 were not written and verified by Minty Notes.*only 2 verified backups/)
+    const archive = await readArchive(dir.files.get(result.fileName)!)
+    if (!archive.ok) throw new Error(archive.errors.join('; '))
+    expect(archive.records.pages.find((p) => p.id === page.id)?.title).toBe('Needs a new backup')
+    expect(service.getState().status).toMatchObject({ lastBackup: { fileName: result.fileName, revision: store.getState().data.revision }, lastError: null })
+    expect(await repo.getSetting('backupStatus')).toEqual(service.getState().status)
+    expect(service.hasUnbackedChanges()).toBe(false)
+  })
+
+  it('writes verified snapshots and keeps the 10 most recently recorded ones', async () => {
     const src = await sampleWorkspace()
     const dir = new FakeDir()
-    for (let i = 0; i < 12; i++) dir.files.set(snapshotFileName(new Date(Date.UTC(2026, 0, 1, 0, 0, i))), new Uint8Array([i]))
     dir.files.set('notes.txt', new Uint8Array([1]))
     const { service } = serviceFor(src.store, dir)
     await service.init()
-    const result = await service.chooseFolder()
-    expect(result).toMatchObject({ ok: true })
-    const snapshots = [...dir.files.keys()].filter(isSnapshotName).sort()
-    expect(snapshots).toHaveLength(10)
-    expect(snapshots.at(-1)).toBe((result as { fileName: string }).fileName)
+    const first = await service.chooseFolder()
+    if (!first?.ok) throw new Error(first?.message)
+    const names = [first.fileName, ...(await recordedBackups(service, src.store, src.page.id, 12))]
+    expect([...dir.files.keys()].filter(isSnapshotName).sort()).toEqual(names.slice(-10).sort())
     // Unrelated files in the folder are never touched.
     expect(dir.files.has('notes.txt')).toBe(true)
-    const restored = await readArchive(dir.files.get(snapshots.at(-1)!)!)
-    expect(restored.ok).toBe(true)
-    expect(service.getState().status.lastBackup?.fileName).toBe(snapshots.at(-1))
+    for (const name of names.slice(-10)) expect((await readArchive(dir.files.get(name)!)).ok).toBe(true)
+    expect(service.getState().status).toMatchObject({ lastBackup: { fileName: names.at(-1) }, cleanupWarning: null })
+    // The ledger only lists what is in the folder.
+    const ledger = await src.repo.getSetting<{ entries: { fileName: string }[] }>('backupLedger')
+    expect(ledger?.entries.map((e) => e.fileName).sort()).toEqual(names.slice(-10).sort())
+  })
+
+  it('never deletes snapshots it did not write and verify (older versions, copies) and warns instead', async () => {
+    const src = await sampleWorkspace()
+    const dir = new FakeDir()
+    for (let i = 0; i < 12; i++) dir.files.set(legacyName(new Date(Date.UTC(2026, 0, 1, 0, 0, i))), new Uint8Array([i]))
+    const before = [...dir.files.entries()]
+    const { service } = serviceFor(src.store, dir)
+    await service.init()
+    const remove = vi.spyOn(dir, 'removeEntry')
+    const result = await service.chooseFolder()
+    if (!result?.ok) throw new Error(result?.message)
+    expect(remove).not.toHaveBeenCalled()
+    for (const [name, bytes] of before) expect(dir.files.get(name)).toEqual(bytes)
+    expect(service.getState().status.cleanupWarning?.message).toMatch(/holds 13 snapshots, more than the 10 Minty Notes keeps.*12 were not written and verified by Minty Notes in this browser.*delete snapshots you no longer need yourself/)
+    expect((await src.repo.getSetting<{ cleanupWarning: unknown }>('backupStatus'))?.cleanupWarning).toEqual(service.getState().status.cleanupWarning)
+  })
+
+  it('never overwrites or cleans up an existing snapshot with the same name, even when the new write fails', async () => {
+    const { store, page } = await sampleWorkspace()
+    const dir = new FakeDir()
+    const { service } = serviceFor(store, dir)
+    await service.init()
+    expect(await service.chooseFolder()).toMatchObject({ ok: true })
+    // Two backups within the same minute (snapshot names have 1-minute resolution).
+    const second = new Date('2026-03-04T05:06:07.000Z')
+    const taken = snapshotFileName(second)
+    const sentinel = new Uint8Array([7, 7, 7])
+    dir.files.set(taken, sentinel)
+    const before = [...dir.files.entries()]
+    store.renamePage(page.id, 'Same-second backup')
+    await store.flush()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(second)
+      dir.failWrite = new DOMException('disk full', 'QuotaExceededError')
+      const remove = vi.spyOn(dir, 'removeEntry')
+      expect(await service.backupNow()).toMatchObject({ ok: false, message: expect.stringMatching(/disk is full/) })
+      // The failed attempt used its own name and deleted nothing (it cannot prove that file is its own).
+      expect(remove).not.toHaveBeenCalled()
+      for (const [name, bytes] of before) expect(dir.files.get(name)).toEqual(bytes)
+      expect(dir.files.get(taken.replace(/\.zip$/, '-2.zip'))).toEqual(new Uint8Array())
+      dir.failWrite = null
+      const result = await service.backupNow()
+      if (!result.ok) throw new Error(result.message)
+      expect(result.fileName).toBe(taken.replace(/\.zip$/, '-3.zip'))
+    } finally { vi.useRealTimers() }
+    expect(dir.files.get(taken)).toBe(sentinel)
+    for (const [name, bytes] of before) expect(dir.files.get(name)).toEqual(bytes)
+    expect(isSnapshotName(taken.replace(/\.zip$/, '-3.zip'))).toBe(true)
+  })
+
+  it('reports a verified backup truthfully when an old snapshot cannot be deleted, keeps that snapshot, and warns', async () => {
+    const src = await sampleWorkspace()
+    const dir = new FakeDir()
+    const { service } = serviceFor(src.store, dir)
+    await service.init()
+    const first = await service.chooseFolder()
+    if (!first?.ok) throw new Error(first?.message)
+    const names = [first.fileName, ...(await recordedBackups(service, src.store, src.page.id, 9))]
+    const stuck = names[0]
+    const stuckBytes = dir.files.get(stuck)
+    const remove = vi.spyOn(dir, 'removeEntry').mockImplementation(async (name: string) => {
+      if (name === stuck) throw new DOMException('in use', 'NoModificationAllowedError')
+      dir.files.delete(name)
+    })
+    const [eleventh] = await recordedBackups(service, src.store, src.page.id, 1)
+    expect(remove.mock.calls.map(([name]) => name)).toEqual([stuck])
+    const [twelfth] = await recordedBackups(service, src.store, src.page.id, 1)
+    // 12 recorded, keep 10: the two oldest are attempted, oldest first; the stuck one stays.
+    expect(remove.mock.calls.map(([name]) => name)).toEqual([stuck, stuck, names[1]])
+    expect(dir.files.get(stuck)).toBe(stuckBytes)
+    expect([...dir.files.keys()].sort()).toEqual([stuck, ...names.slice(2), eleventh, twelfth].sort())
+    expect((await readArchive(dir.files.get(twelfth)!)).ok).toBe(true)
+    expect(service.getState().status).toMatchObject({ lastBackup: { fileName: twelfth }, lastError: null, cleanupWarning: { message: expect.stringMatching(/holds 11 snapshots.*1 could not be deleted because the folder refused/) } })
+    expect(await src.repo.getSetting('backupStatus')).toEqual(service.getState().status)
   })
 
   it('does not prune or report success when the write fails', async () => {
     const src = await sampleWorkspace()
     const dir = new FakeDir()
-    for (let i = 0; i < 10; i++) dir.files.set(snapshotFileName(new Date(Date.UTC(2026, 0, 1, 0, 0, i))), new Uint8Array([i]))
+    // More than `keep`, in both name formats: a failed write must still remove none of them.
+    for (let i = 0; i < 6; i++) dir.files.set(legacyName(new Date(Date.UTC(2026, 0, 1, 0, 0, i))), new Uint8Array([i]))
+    for (let i = 0; i < 6; i++) dir.files.set(snapshotFileName(new Date(Date.UTC(2026, 0, 2, i))), new Uint8Array([i]))
     const before = [...dir.files.keys()].sort()
+    expect(before).toHaveLength(12)
     dir.failWrite = new DOMException('disk full', 'QuotaExceededError')
     const { service } = serviceFor(src.store, dir)
     await service.init()
+    const remove = vi.spyOn(dir, 'removeEntry')
     const result = await service.chooseFolder()
     expect(result).toMatchObject({ ok: false, message: expect.stringMatching(/disk is full/) })
-    expect([...dir.files.keys()].sort()).toEqual(before)
+    expect(remove).not.toHaveBeenCalled()
+    // Only the attempt's own (empty) output was added.
+    expect([...dir.files.keys()].filter((name) => !before.includes(name)).map((name) => dir.files.get(name)!.byteLength)).toEqual([0])
     expect(service.getState().status.lastBackup).toBeNull()
     expect(service.getState().status.lastError?.message).toMatch(/disk is full/)
   })
@@ -472,5 +629,193 @@ describe('trashed pages of deleted sections (version-1 defect)', () => {
     const broken = { ...records, pages: records.pages.map((p) => (p.location.kind === 'section' ? { ...p, location: { kind: 'section' as const, sectionId: 'gone' } } : p)) }
     const result = await readArchive(await buildArchive(broken, blobs, 'test'))
     expect(result).toMatchObject({ ok: false, errors: expect.arrayContaining([expect.stringMatching(/missing section/)]) })
+  })
+})
+
+
+describe('folder backup ownership across asynchronous builds and writes', () => {
+  async function connected() {
+    const src = await sampleWorkspace()
+    await src.store.becomeEditor()
+    const dir = new FakeDir()
+    const { service } = serviceFor(src.store, dir)
+    await service.init()
+    await service.chooseFolder()
+    // Ten recorded snapshots plus the next one exceed the retention count, so any unexpected pruning is visible.
+    await recordedBackups(service, src.store, src.page.id, 9)
+    expect([...dir.files.keys()].filter(isSnapshotName)).toHaveLength(10)
+    const status = { ...service.getState().status, lastDownloadAt: '2026-11-14T12:00:00.000Z' }
+    const takeOver = async () => {
+      const other = new WorkspaceStore(src.repo)
+      await other.becomeEditor()
+      src.store.setReadOnly(true)
+      await src.repo.setSetting('backupStatus', status)
+    }
+    return { ...src, dir, service, status, takeOver }
+  }
+
+  it('does not start a folder write or prune after losing editing during archive construction', async () => {
+    const { dir, service, takeOver, repo, status } = await connected()
+    const before = [...dir.files.entries()]
+    const create = service.createArchive.bind(service)
+    vi.spyOn(service, 'createArchive').mockImplementationOnce(async () => {
+      const archive = await create()
+      await takeOver()
+      return archive
+    })
+    expect(await service.backupNow()).toMatchObject({ ok: false, message: expect.stringMatching(/No folder file was written/) })
+    expect([...dir.files.entries()]).toEqual(before)
+    expect(await repo.getSetting('backupStatus')).toEqual(status)
+    expect(service.getState().running).toBeNull()
+  })
+
+  it.each([true, false])('keeps a completed snapshot without pruning/status changes after a takeover during the write (notified: %s)', async (notified) => {
+    const { dir, service, takeOver, repo, status } = await connected()
+    const before = [...dir.files.entries()]
+    dir.beforeClose = notified ? takeOver : async () => {
+      await new WorkspaceStore(repo).becomeEditor()
+      await repo.setSetting('backupStatus', status)
+    }
+    expect(await service.backupNow()).toMatchObject({ ok: false, message: expect.stringMatching(/complete snapshot was written/) })
+    expect([...dir.files.keys()].filter(isSnapshotName)).toHaveLength(before.length + 1)
+    for (const [name, bytes] of before) expect(dir.files.get(name)).toEqual(bytes)
+    const added = [...dir.files.keys()].filter((name) => !before.some(([old]) => old === name))
+    expect(added).toHaveLength(1)
+    expect((await readArchive(dir.files.get(added[0])!)).ok).toBe(true)
+    expect(await repo.getSetting('backupStatus')).toEqual(status)
+    expect(service.getState().running).toBeNull()
+  })
+
+  it('does not remove another snapshot after a takeover during an in-progress deletion', async () => {
+    const { dir, service, takeOver, repo, status } = await connected()
+    const before = [...dir.files.keys()]
+    const remove = vi.spyOn(dir, 'removeEntry').mockImplementationOnce(async (name) => {
+      dir.files.delete(name)
+      await takeOver()
+    })
+    expect(await service.backupNow()).toMatchObject({ ok: false })
+    expect(remove).toHaveBeenCalledTimes(1)
+    expect([...dir.files.keys()].filter(isSnapshotName)).toHaveLength(before.length)
+    expect(await repo.getSetting('backupStatus')).toEqual(status)
+  })
+
+  it('stops removals when editing moves while the retention list is being read', async () => {
+    const { dir, service, takeOver, repo, status } = await connected()
+    const before = [...dir.files.keys()]
+    const keys = dir.keys.bind(dir)
+    let lists = 0
+    vi.spyOn(dir, 'keys').mockImplementation(async function* () {
+      // The first list chooses a unique output name; the second starts retention.
+      if (++lists === 2) await takeOver()
+      yield* keys()
+    })
+    expect(await service.backupNow()).toMatchObject({ ok: false, message: expect.stringMatching(/cleanup and backup status updates were stopped/) })
+    expect(before.every((name) => dir.files.has(name))).toBe(true)
+    expect([...dir.files.keys()].filter(isSnapshotName)).toHaveLength(before.length + 1)
+    expect(await repo.getSetting('backupStatus')).toEqual(status)
+  })
+  // Audit L1: the error path must not store status after a takeover.
+  it('a failed flush after a takeover does not overwrite the stored backup status', async () => {
+    const { store, dir, service, repo, status, page } = await connected()
+    const before = [...dir.files.entries()]
+    store.renamePage(page.id, 'Unsaved in the old window')
+    // Another window claims storage; this window has not been told yet.
+    const other = new WorkspaceStore(repo)
+    await other.becomeEditor()
+    await repo.setSetting('backupStatus', status)
+    const result = await service.backupNow()
+    expect(result).toMatchObject({ ok: false, message: expect.stringMatching(/did not change the backup status/) })
+    expect(store.isOwner).toBe(false)
+    expect([...dir.files.entries()]).toEqual(before)
+    expect(await repo.getSetting('backupStatus')).toEqual(status)
+    expect(service.getState().running).toBeNull()
+  })
+
+  it.each([
+    ['the lock-loss signal arrived', true],
+    ['only storage knows about the takeover', false],
+  ])('a failed folder write after a takeover does not overwrite the stored backup status (%s)', async (_label, notified) => {
+    const { store, dir, service, takeOver, repo, status } = await connected()
+    const before = [...dir.files.keys()]
+    dir.beforeClose = async () => {
+      if (notified) await takeOver()
+      else {
+        await new WorkspaceStore(repo).becomeEditor()
+        await repo.setSetting('backupStatus', status)
+      }
+      throw new DOMException('disk full', 'QuotaExceededError')
+    }
+    const result = await service.backupNow()
+    expect(result).toMatchObject({ ok: false, message: expect.stringMatching(/disk is full.*did not change the backup status/) })
+    // The simulated lock-loss signal freezes the window; a storage-only takeover is detected by the token check.
+    expect(notified ? store.getState().readOnly : !store.isOwner).toBe(true)
+    // Nothing was deleted; only the failed attempt's own empty output was added.
+    expect(before.every((name) => dir.files.has(name))).toBe(true)
+    expect([...dir.files.keys()].filter((name) => !before.includes(name)).map((name) => dir.files.get(name)!.byteLength)).toEqual([0])
+    expect(await repo.getSetting('backupStatus')).toEqual(status)
+  })
+
+  it('a window that never owned editing does not store status, even from a download or a folder error', async () => {
+    const { repo, status } = await connected()
+    await repo.setSetting('backupStatus', status)
+    const reader = new WorkspaceStore(repo)
+    await reader.load()
+    reader.revokeOwnership()
+    const { service: readerService, downloads } = serviceFor(reader, new FakeDir())
+    await readerService.init()
+    expect(await readerService.downloadBackup()).toMatchObject({ ok: true })
+    expect(downloads).toHaveLength(1)
+    expect(readerService.getState().status.lastDownloadAt).not.toBe(status.lastDownloadAt)
+    expect(await repo.getSetting('backupStatus')).toEqual(status)
+  })
+
+  // Audit L2: a stale in-memory owner flag must not let folder work continue.
+  it('refuses the folder write when storage shows a takeover during archive construction that this window was not told about', async () => {
+    const { store, dir, service, repo, status } = await connected()
+    const before = [...dir.files.entries()]
+    const create = service.createArchive.bind(service)
+    vi.spyOn(service, 'createArchive').mockImplementationOnce(async () => {
+      const archive = await create()
+      await new WorkspaceStore(repo).becomeEditor()
+      await repo.setSetting('backupStatus', status)
+      return archive
+    })
+    expect(store.getState().readOnly).toBe(false)
+    expect(await service.backupNow()).toMatchObject({ ok: false, message: expect.stringMatching(/No folder file was written/) })
+    expect(store.isOwner).toBe(false)
+    expect(store.getState().readOnly).toBe(true)
+    expect([...dir.files.entries()]).toEqual(before)
+    expect(await repo.getSetting('backupStatus')).toEqual(status)
+  })
+
+  it('stops retention pruning when storage shows a takeover during an in-progress backup', async () => {
+    const { store, dir, service, repo, status } = await connected()
+    const before = [...dir.files.keys()]
+    const remove = vi.spyOn(dir, 'removeEntry').mockImplementationOnce(async (name) => {
+      dir.files.delete(name)
+      // Claimed in storage only: no lock-loss signal, no read-only flag.
+      await new WorkspaceStore(repo).becomeEditor()
+      await repo.setSetting('backupStatus', status)
+    })
+    expect(await service.backupNow()).toMatchObject({ ok: false, message: expect.stringMatching(/complete snapshot was written/) })
+    expect(remove).toHaveBeenCalledTimes(1)
+    expect(store.isOwner).toBe(false)
+    // One new snapshot written, exactly one old one removed before the takeover was seen.
+    expect([...dir.files.keys()].filter(isSnapshotName)).toHaveLength(before.length)
+    expect(await repo.getSetting('backupStatus')).toEqual(status)
+  })
+
+  it('confirmOwnership follows the stored owner token and accepts a workspace with no recorded owner', async () => {
+    const { store, repo } = await freshStore()
+    expect(await store.confirmOwnership()).toBe(true)
+    await store.becomeEditor()
+    expect(await store.confirmOwnership()).toBe(true)
+    const other = new WorkspaceStore(repo)
+    await other.becomeEditor()
+    expect(store.isOwner).toBe(true)
+    expect(await store.confirmOwnership()).toBe(false)
+    expect(store.isOwner).toBe(false)
+    expect(store.getState().readOnly).toBe(true)
+    expect(await other.confirmOwnership()).toBe(true)
   })
 })

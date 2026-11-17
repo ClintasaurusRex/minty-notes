@@ -92,7 +92,7 @@ test('one shared reference updates in two projects; a project copy stays indepen
 
   await openProject(page, 'North pump station')
   await expect(page.getByTestId('ref-suggested')).toHaveCount(0) // the original is hidden; North uses its copy
-  await page.locator('.navigator').getByRole('button', { name: /Alarm setup/ }).click()
+  await page.locator('.navigator .nav-page').filter({ hasText: /Alarm setup/ }).click()
   await expect(page.getByTestId('copy-banner')).toBeVisible()
   await expect(page.locator('.obj-text')).toHaveText('North-only alarm list')
 
@@ -190,7 +190,7 @@ test('archive, trash, and delete keep shared pages; projects, links, tags, and i
   await expect(fresh.getByLabel('Path of location 1')).toHaveValue('D:\\Dropbox\\Jobs\\J-3100')
   await fresh.getByTestId('tab-overview').click()
   await expect(fresh.getByTestId('ref-suggested')).toContainText('Panel wiring standard')
-  await fresh.locator('.navigator').getByRole('button', { name: /Site walk/ }).click()
+  await fresh.locator('.navigator .nav-page').filter({ hasText: /Site walk/ }).click()
   await expect(fresh.locator('.obj-text')).toHaveText('Cabinet 2 needs a new breaker')
   await expect(fresh.locator('.chip-tag')).toContainText('#punchlist')
   expect(await imageHash(fresh.locator('.obj-image img'))).toBe(hash)
@@ -209,7 +209,7 @@ test('archive, trash, and delete keep shared pages; projects, links, tags, and i
   await expect(page.getByRole('list', { name: 'Trashed projects' })).toHaveCount(0)
   await expect(page.locator('.navigator')).toContainText('Site walk')
   await page.getByTestId('rail-notebooks').click()
-  await page.locator('.navigator').getByRole('button', { name: /Panel wiring standard/ }).click()
+  await page.locator('.navigator .nav-page').filter({ hasText: /Panel wiring standard/ }).click()
   await expect(page.locator('.obj-text')).toHaveText('Use ferrules on every conductor')
 })
 

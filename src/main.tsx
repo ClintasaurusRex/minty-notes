@@ -9,7 +9,16 @@ import './ui/app.css'
 
 const root = createRoot(document.getElementById('root')!)
 
-createServices()
+createServices({
+  // Without this the splash would say "Opening…" indefinitely. Nothing has been
+  // migrated yet; the open continues by itself once the older tab lets go.
+  onUpgradeBlocked: () =>
+    root.render(
+      <div className="splash" role="status" data-testid="upgrade-blocked">
+        Minty Notes needs to update its local storage, but another Minty Notes window or tab is still using it. Close or reload the other Minty Notes windows to continue. Nothing has been changed yet.
+      </div>,
+    ),
+})
   .then((services) => {
     root.render(
       <StrictMode>

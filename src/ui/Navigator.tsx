@@ -1,8 +1,8 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { useServices, useWorkspace } from '../app/context'
 import { normalize } from '../domain/search'
 import { projectNotes, projectReferences } from '../domain/references'
-import type { Page } from '../domain/types'
+import type { Page, Project } from '../domain/types'
 import { ReadOnlyError } from '../store/workspaceStore'
 import { shortDateTime } from './format'
 import { IconChevron, IconPencil, IconPin, IconPlus, IconRestore, IconTag, IconTrash } from './icons'
@@ -12,6 +12,7 @@ import { ImportProjectButton } from './ProjectImportDialog'
 import { useNav, type NavSection, type OpenProjectOptions } from './nav'
 import { notify } from './notices'
 import { STATUS_LABELS } from './projectFormat'
+import './noteOrder.css'
 
 interface Props {
   section: NavSection
@@ -89,6 +90,97 @@ function CategoryDialog({ kind, id, onClose }: { kind: 'notebooks' | 'sections';
   )
 }
 
+function ProjectNoteList({ project, notes, pageId, onOpenPage }: { project: Project; notes: Page[]; pageId: string | null; onOpenPage: Props['onOpenPage'] }) {
+  const { store } = useServices()
+  const readOnly = useWorkspace((s) => s.readOnly)
+  const [announcement, setAnnouncement] = useState('')
+  const [destination, setDestination] = useState<string | null | undefined>()
+  const dragId = useRef<string | null>(null)
+  const list = useRef<HTMLUListElement>(null)
+  /** After a move, focus stays with the moved note: on its grip when the grip moved it, otherwise on the note. */
+  const focusAfter = useRef<{ id: string; on: 'note' | 'grip' } | null>(null)
+  const editable = !readOnly && !project.trashedAt
+  useEffect(() => {
+    const target = focusAfter.current
+    if (!target) return
+    focusAfter.current = null
+    list.current?.querySelector<HTMLElement>(`[data-note-id="${CSS.escape(target.id)}"] ${target.on === 'grip' ? '.note-drag-handle' : '.nav-page'}`)?.focus()
+  })
+  const announce = (id: string, on: 'note' | 'grip' = 'note') => {
+    const data = store.getState().data
+    const current = projectNotes(project.id, data.pages, data.projects[project.id].noteSort)
+    setAnnouncement(`Moved “${data.pages[id].title}” to position ${current.findIndex((p) => p.id === id) + 1} of ${current.length}. Sorting: Manual.`)
+    focusAfter.current = { id, on }
+  }
+  const nudge = (id: string, direction: 'up' | 'down', on: 'note' | 'grip' = 'note') => guard(() => {
+    if (store.nudgeProjectNote(project.id, id, direction)) announce(id, on)
+  })
+  const over = (e: DragEvent, before: string | null) => {
+    if (!editable || !dragId.current) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDestination(before)
+  }
+  const drop = (e: DragEvent, before: string | null) => {
+    if (!editable || !dragId.current) return
+    e.preventDefault()
+    e.stopPropagation()
+    const id = dragId.current
+    dragId.current = null
+    setDestination(undefined)
+    guard(() => { if (store.moveProjectNote(project.id, id, before)) announce(id) })
+  }
+  return <>
+    <label className="note-sort-label">Sort notes
+      <select aria-label="Sort project notes" value={project.noteSort} disabled={!editable} onChange={(e) => guard(() => {
+        store.setProjectNoteSort(project.id, e.target.value as Project['noteSort'])
+        setAnnouncement(`Sorting: ${e.target.value === 'manual' ? 'Manual' : 'Last edited'}.`)
+      })}>
+        <option value="last-edited">Last edited</option>
+        <option value="manual">Manual</option>
+      </select>
+    </label>
+    {editable && notes.length > 1 && <p className="nav-hint" id="note-order-help">Drag a grip, or focus a grip and press ↑/↓, to reorder. The arrow buttons and Alt+↑/↓ on a note also move it. Reordering selects Manual.</p>}
+    <ul ref={list} className="nav-list project-note-list" aria-label="Project notes">
+      {notes.length === 0 && <li className="nav-empty small">No notes</li>}
+      {notes.map((p, index) => <li key={p.id} data-note-id={p.id} className={`project-note-row${destination === p.id ? ' note-drop-before' : ''}`} onDragOver={(e) => over(e, p.id)} onDrop={(e) => drop(e, p.id)} onKeyDown={(e) => {
+        if (editable && e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+          e.preventDefault()
+          e.stopPropagation()
+          nudge(p.id, e.key === 'ArrowUp' ? 'up' : 'down')
+        }
+      }}>
+        {editable && <button type="button" className="icon-btn small note-drag-handle" draggable aria-label={`Reorder ${p.title || 'Untitled'}, position ${index + 1} of ${notes.length}`} title="Drag, or press ↑/↓, to reorder" aria-describedby={notes.length > 1 ? 'note-order-help' : undefined} aria-keyshortcuts="ArrowUp ArrowDown"
+          onKeyDown={(e) => {
+            if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
+            e.preventDefault()
+            e.stopPropagation()
+            nudge(p.id, e.key === 'ArrowUp' ? 'up' : 'down', 'grip')
+          }}
+          onClick={() => setAnnouncement(notes.length > 1
+            ? `“${p.title || 'Untitled'}” is at position ${index + 1} of ${notes.length}. Press the up or down arrow key to move it, or drag the grip.`
+            : 'Only one note: nothing to reorder.')}
+          onDragStart={(e) => {
+          dragId.current = p.id
+          setDestination(null)
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData('text/x-minty-project-note', p.id)
+        }} onDragEnd={() => { dragId.current = null; setDestination(undefined) }}>⠿</button>}
+        <button type="button" className={`nav-page${p.id === pageId ? ' is-active' : ''}`} aria-current={p.id === pageId ? 'page' : undefined} onClick={() => onOpenPage(p.id, project.id)}>
+          <span className="nav-page-title">{p.title || 'Untitled'}</span>
+          <span className="nav-page-meta">{p.copiedFrom ? 'Project copy' : shortDateTime(p.updatedAt)}</span>
+        </button>
+        {editable && <span className="note-order-actions">
+          <button type="button" className="icon-btn small" aria-label={`Move ${p.title || 'Untitled'} up`} title="Move up (Alt+↑)" disabled={index === 0} onClick={() => nudge(p.id, 'up')}>↑</button>
+          <button type="button" className="icon-btn small" aria-label={`Move ${p.title || 'Untitled'} down`} title="Move down (Alt+↓)" disabled={index === notes.length - 1} onClick={() => nudge(p.id, 'down')}>↓</button>
+        </span>}
+      </li>)}
+      {destination !== undefined && <li className={`note-drop-end${destination === null ? ' note-drop-before' : ''}`} onDragOver={(e) => over(e, null)} onDrop={(e) => drop(e, null)}>Drop at end</li>}
+    </ul>
+    <span className="sr-only" role="status" aria-live="polite">{announcement}</span>
+  </>
+}
+
 function ProjectsNav({ projectId, pageId, onOpenPage, onOpenProject }: Pick<Props, 'projectId' | 'pageId' | 'onOpenPage' | 'onOpenProject'>) {
   const { store } = useServices()
   const data = useWorkspace((s) => s.data)
@@ -102,7 +194,7 @@ function ProjectsNav({ projectId, pageId, onOpenPage, onOpenProject }: Pick<Prop
     const tasks = Object.values(data.tasks).filter((t) => t.projectId === project.id)
     const doneTasks = tasks.filter((t) => t.status === 'done').length
     const openTasks = tasks.length - doneTasks
-    const notes = projectNotes(project.id, data.pages)
+    const notes = projectNotes(project.id, data.pages, project.noteSort)
     const refs = projectReferences(project, data)
     return (
       <nav className="navigator" aria-label="Project">
@@ -142,12 +234,7 @@ function ProjectsNav({ projectId, pageId, onOpenPage, onOpenProject }: Pick<Prop
             </span>
           )}
         </div>
-        <ul className="nav-list">
-          {notes.length === 0 && <li className="nav-empty small">No notes</li>}
-          {notes.map((p) => (
-            <PageItem key={p.id} page={p} active={p.id === pageId} onOpen={() => onOpenPage(p.id, project.id)} meta={p.copiedFrom ? 'Project copy' : shortDateTime(p.updatedAt)} />
-          ))}
-        </ul>
+        <ProjectNoteList project={project} notes={notes} pageId={pageId} onOpenPage={onOpenPage} />
         <div className="nav-subhead">
           <span>References</span>
         </div>

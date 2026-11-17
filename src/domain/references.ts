@@ -1,4 +1,4 @@
-import type { Category, Notebook, Page, Project, Section } from './types'
+import type { Category, Notebook, Page, Project, ProjectNoteSort, Section } from './types'
 
 /**
  * Projects and reusable knowledge (pure rules, no storage).
@@ -123,20 +123,16 @@ export function linkedProjects(page: Page, data: LibraryData): Project[] {
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/**
- * Pages a project owns (its notes), live only, most recently edited first.
- *
- * Notes edited at the same moment — every note of a project made from a
- * template, for one — follow their creation order (`order`, then creation
- * time). Without that, their order was whatever order storage returned the
- * records in, i.e. by record ID: it changed on reload, and an imported copy of
- * the project (new IDs) showed the same notes in another sequence. A project
- * package carries `order`, so both projects now list such notes alike.
- */
-export function projectNotes(projectId: string, pages: Record<string, Page>): Page[] {
+/** Live project-owned notes, with deterministic ties in either sorting mode. */
+export function projectNotes(projectId: string, pages: Record<string, Page>, sort: ProjectNoteSort = 'last-edited'): Page[] {
   return Object.values(pages)
     .filter((p) => !p.trashedAt && ownerProjectId(p) === projectId)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.order - b.order || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+    .sort((a, b) => (sort === 'last-edited' ? b.updatedAt.localeCompare(a.updatedAt) : 0) || a.order - b.order || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+}
+
+/** True when `Page.order` already holds a Manual sequence the user established (see `Project.manualOrderSet`). */
+export function hasManualOrder(project: Pick<Project, 'noteSort' | 'manualOrderSet'>): boolean {
+  return project.manualOrderSet ?? project.noteSort === 'manual'
 }
 
 /** Remove IDs that no longer point at an existing record. Returns the same array when nothing changed. */

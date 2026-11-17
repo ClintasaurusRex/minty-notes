@@ -20,10 +20,16 @@ export interface Services {
   onBlocked: (listener: () => void) => () => void
 }
 
-export async function createServices(): Promise<Services> {
+export interface StartOptions {
+  /** The database upgrade is waiting for an older Minty Notes tab to close. */
+  onUpgradeBlocked?: () => void
+}
+
+export async function createServices(options: StartOptions = {}): Promise<Services> {
   const blockedListeners = new Set<() => void>()
   let repo: IdbRepository | null = null
   repo = await IdbRepository.open(undefined, {
+    onUpgradeBlocked: options.onUpgradeBlocked,
     onBlocking: () => {
       repo?.close()
       for (const l of blockedListeners) l()

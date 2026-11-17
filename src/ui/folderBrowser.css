@@ -1,0 +1,26 @@
+.folder-browser {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.folder-browser .btn-row {
+  flex-wrap: wrap;
+}
+
+.folder-entry {
+  padding-block: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.folder-entry .btn {
+  max-width: 100%;
+  white-space: normal;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.folder-browser nav {
+  overflow-wrap: anywhere;
+}

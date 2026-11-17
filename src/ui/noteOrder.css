@@ -1,0 +1,14 @@
+/* Project note order: grips alone drag, leaving title text and editor gestures alone. */
+.note-sort-label { display: flex; align-items: center; gap: 8px; padding: 4px 12px; color: var(--text-2); font-size: 12px; }
+.note-sort-label select { flex: 1; min-width: 0; min-height: 32px; padding: 4px 6px; color: var(--text); background: var(--raised); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
+.project-note-row { display: flex; align-items: center; border-top: 3px solid transparent; }
+.project-note-row > .nav-page { flex: 1; min-width: 0; }
+.note-drag-handle { flex: none; cursor: grab; touch-action: pan-y; }
+.note-drag-handle:active { cursor: grabbing; }
+.note-order-actions .icon-btn { font-size: 18px; line-height: 1; }
+.note-order-actions { display: flex; flex-direction: column; flex: none; }
+.note-drop-before { border-top: 3px solid var(--mint); background: var(--raised); }
+.note-drop-end { min-height: 36px; padding: 8px 12px; color: var(--text-2); font-size: 12px; border-top: 3px dashed var(--border); }
+.note-drop-end.note-drop-before { border-top-color: var(--mint); }
+@media (pointer: coarse) { .note-order-actions .icon-btn { min-width: 36px; min-height: 36px; } }
+@media (forced-colors: active) { .note-drop-before, .note-drop-end.note-drop-before { border-top-color: Highlight; } }

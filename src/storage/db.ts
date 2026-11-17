@@ -16,7 +16,8 @@ export const DB_NAME = 'minty-notes'
  *    fields are optional — but the version bump stops an older cached app
  *    (DB version 4) from opening, and editing, content it cannot represent.
  */
-export const DB_VERSION = 5
+// 6: format 5; project noteSort, initialized to last-edited atomically.
+export const DB_VERSION = 6
 
 export interface MintyDB extends DBSchema {
   projects: { key: string; value: Project }
@@ -44,6 +45,12 @@ export type MintyDatabase = IDBPDatabase<MintyDB>
 export interface OpenOptions {
   /** Called when another tab needs to upgrade the database. */
   onBlocking?: () => void
+  /**
+   * Called when this open must upgrade the database but another tab still holds
+   * an older connection. The open stays pending (nothing is migrated yet) and
+   * continues on its own once that connection closes.
+   */
+  onUpgradeBlocked?: () => void
 }
 
 /** Version-1 object stores (unchanged in version 2). */
@@ -146,6 +153,15 @@ export async function migrateToV5(tx: UpgradeTx): Promise<void> {
   if (workspace && (workspace.formatVersion ?? 1) < FORMAT_VERSION) await settings.put({ ...workspace, formatVersion: FORMAT_VERSION }, 'workspace')
 }
 
+/** Version 5 → 6: preserve every project and give existing users Last edited ordering. */
+export async function migrateToV6(tx: UpgradeTx): Promise<void> {
+  const projects = tx.objectStore('projects')
+  for (const project of await projects.getAll()) await projects.put({ ...project, noteSort: 'last-edited' })
+  const settings = tx.objectStore('settings')
+  const workspace = (await settings.get('workspace')) as { formatVersion?: number } | undefined
+  if (workspace) await settings.put({ ...workspace, formatVersion: FORMAT_VERSION }, 'workspace')
+}
+
 export function openMintyDB(name = DB_NAME, options: OpenOptions = {}): Promise<MintyDatabase> {
   return openDB<MintyDB>(name, DB_VERSION, {
     upgrade(db, oldVersion, _newVersion, transaction) {
@@ -160,6 +176,7 @@ export function openMintyDB(name = DB_NAME, options: OpenOptions = {}): Promise<
           if (oldVersion < 3) await migrateToV3(transaction)
           if (oldVersion < 4) await migrateToV4(transaction)
           if (oldVersion < 5) await migrateToV5(transaction)
+          if (oldVersion < 6) await migrateToV6(transaction)
         })().catch(() => transaction.abort())
         // The open request reports the failure; don't also leave an unhandled rejection.
         transaction.done.catch(() => undefined)
@@ -167,6 +184,9 @@ export function openMintyDB(name = DB_NAME, options: OpenOptions = {}): Promise<
     },
     blocking() {
       options.onBlocking?.()
+    },
+    blocked() {
+      options.onUpgradeBlocked?.()
     },
   })
 }

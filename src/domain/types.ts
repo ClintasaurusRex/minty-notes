@@ -1,12 +1,12 @@
 /**
- * Core record types for the Minty Notes workspace (data format version 4).
+ * Core record types for the Minty Notes workspace (data format version 5).
  *
  * Every record has a stable ID. Links between records always use IDs,
  * never titles or folder names. See docs/DATA_FORMAT.md.
  */
 
 /** Version of the stored data and backup format. Bump with a migration. */
-export const FORMAT_VERSION = 4
+export const FORMAT_VERSION = 5
 
 /** Default notebook page width in CSS pixels (validated in Stage 0). */
 export const PAGE_WIDTH = 1200
@@ -123,6 +123,8 @@ export interface Tag {
   updatedAt: Timestamp
 }
 
+export type ProjectNoteSort = 'last-edited' | 'manual'
+
 export type ProjectStatus = 'planned' | 'active' | 'on-hold' | 'complete'
 export const PROJECT_STATUSES: ProjectStatus[] = ['planned', 'active', 'on-hold', 'complete']
 
@@ -155,6 +157,14 @@ export interface FileLocation {
 }
 
 export interface Project {
+  /** Per-project ordering; travels with backups and portable project packages (format 5). */
+  noteSort: ProjectNoteSort
+  /**
+   * True once a Manual order exists in the notes' `Page.order` (format 5, optional).
+   * Missing means `noteSort === 'manual'`: older format-5 data needs no rewrite.
+   * The first switch to Manual copies the visible Last edited order; later switches keep it.
+   */
+  manualOrderSet?: boolean
   id: string
   name: string
   customer: string

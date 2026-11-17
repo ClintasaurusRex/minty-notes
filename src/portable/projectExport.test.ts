@@ -2,7 +2,7 @@ import { strFromU8, unzipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
 import { readArchive, sha256Hex } from '../backup/archive'
 import { BackupService } from '../backup/backupService'
-import { isSnapshotName, listSnapshots, pruneSnapshots, snapshotFileName } from '../backup/folder'
+import { isSnapshotName, listSnapshots, pruneSnapshots, snapshotFileName, type LedgerEntry } from '../backup/folder'
 import { pageLinkIds } from '../domain/pageLink'
 import { FORMAT_VERSION, type Page, type TextObject, type WorkspaceRecords } from '../domain/types'
 import { DOCX_PNG } from '../test/docFixtures'
@@ -377,10 +377,18 @@ describe('packages and backups stay separate', () => {
     expect(projectPackageFileName('  ///  ', NOW)).toBe('minty-project-project-20261111-150405Z.zip')
     expect(projectPackageFileName('Größe & Maße: “Ünïcode” <test>', NOW)).toBe('minty-project-Größe-Maße-Ünïcode-test-20261111-150405Z.zip')
 
-    // A backup folder with 12 snapshots, a package, and another file: pruning keeps the newest 10 snapshots and both other files.
+    // A backup folder with 12 recorded snapshots, a package, and another file: pruning keeps the newest 10 snapshots and both other files.
     const files = new Map<string, Uint8Array>()
-    for (let i = 0; i < 12; i++) files.set(snapshotFileName(new Date(Date.UTC(2026, 10, 1, 10, i))), new Uint8Array(1))
-    files.set(name, new Uint8Array(1))
+    const ledger: LedgerEntry[] = []
+    for (let i = 0; i < 12; i++) {
+      const fileName = snapshotFileName(new Date(Date.UTC(2026, 10, 1, 10, i)))
+      const bytes = new Uint8Array([i])
+      files.set(fileName, bytes)
+      ledger.push({ seq: i + 1, fileName, size: 1, sha256: await sha256Hex(bytes), at: '', revision: i })
+    }
+    // Even a ledger entry naming the package is ignored: retention only considers snapshot names.
+    files.set(name, new Uint8Array([99]))
+    ledger.unshift({ seq: 0, fileName: name, size: 1, sha256: await sha256Hex(new Uint8Array([99])), at: '', revision: 0 })
     files.set('holiday.jpg', new Uint8Array(1))
     const dir = {
       async *keys() {
@@ -389,10 +397,13 @@ describe('packages and backups stay separate', () => {
       async removeEntry(n: string) {
         files.delete(n)
       },
+      async getFileHandle(n: string) {
+        if (!files.has(n)) throw new DOMException('missing', 'NotFoundError')
+        return { getFile: async () => new Blob([files.get(n)! as Uint8Array<ArrayBuffer>]) }
+      },
     } as unknown as FileSystemDirectoryHandle
-    const newest = (await listSnapshots(dir)).at(-1)!
-    const removed = await pruneSnapshots(dir, 10, newest)
-    expect(removed).toHaveLength(2)
+    const report = await pruneSnapshots(dir, 10, ledger, ledger.at(-1)!.fileName)
+    expect(report.removed).toEqual([ledger[1].fileName, ledger[2].fileName])
     expect(await listSnapshots(dir)).toHaveLength(10)
     expect(files.has(name) && files.has('holiday.jpg')).toBe(true)
   })

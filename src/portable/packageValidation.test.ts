@@ -78,7 +78,7 @@ describe('archive structure', () => {
 
   it('refuses unsupported versions with a clear next step', async () => {
     await refused(await damaged((p) => void (p.manifest.packageVersion = 2)), /newer version of Minty Notes \(package version 2.*Update the app/)
-    await refused(await damaged((p) => void (p.manifest.formatVersion = FORMAT_VERSION + 1)), /newer version of Minty Notes.*data format 5.*Update the app/)
+    await refused(await damaged((p) => void (p.manifest.formatVersion = FORMAT_VERSION + 1)), /newer version of Minty Notes.*data format 6.*Update the app/)
     await refused(await damaged((p) => void (p.manifest.formatVersion = 3)), /data format 3, which project packages never used/)
     await refused(await damaged((p) => void (p.manifest.packageVersion = 0)), /version information is invalid/)
     await refused(await damaged((p) => void (p.manifest.packageVersion = '1' as never)), /version information is invalid/)

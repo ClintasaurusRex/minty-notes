@@ -266,7 +266,7 @@ test('a project travels to another workspace: export, import beside unrelated pr
   // The file itself (read in Node): a versioned package with only this project — and the unredacted original.
   const zip = unzipSync(readFileSync(packagePath))
   const manifest = JSON.parse(strFromU8(zip['manifest.json'])) as { format: string; packageVersion: number; formatVersion: number; counts: Record<string, number>; files: { path: string; sha256: string }[] }
-  expect(manifest).toMatchObject({ format: 'minty-notes-project', packageVersion: 1, formatVersion: 4, counts: { notes: 2, references: 1, tasks: 3, attachments: 2 } })
+  expect(manifest).toMatchObject({ format: 'minty-notes-project', packageVersion: 1, formatVersion: 5, counts: { notes: 2, references: 1, tasks: 3, attachments: 2 } })
   const projectJson = strFromU8(zip['project.json'])
   expect(projectJson).not.toContain('CONFIDENTIAL-PRICING-9000')
   expect(projectJson).not.toContain('Other customer job')

@@ -47,6 +47,8 @@ export const SETTINGS = {
   ui: 'ui',
   safeguard: 'safeguard',
   editorOwner: 'editorOwner',
+  /** Snapshots this browser wrote and verified, in the order they were recorded (since 0.5.0). */
+  backupLedger: 'backupLedger',
 } as const
 
 export interface Activity {
@@ -134,6 +136,12 @@ export interface Repository {
   getBlob(id: string): Promise<Blob | undefined>
   getSetting<T>(key: string): Promise<T | undefined>
   setSetting(key: string, value: unknown): Promise<void>
+  /**
+   * Read, change, and write one device setting in a single transaction, only if
+   * `token` still owns the workspace (the same fence as `commit`). `update` must
+   * be synchronous. Throws OwnershipError and writes nothing otherwise.
+   */
+  updateSettingAsOwner<T>(key: string, update: (current: T | undefined) => T, token: string | null): Promise<T>
   deleteSetting(key: string): Promise<void>
   /** Every record, attachment bytes, and the revision they represent (one snapshot). */
   readAll(): Promise<{ records: WorkspaceRecords; blobs: Map<string, Blob>; revision: number }>
@@ -300,6 +308,27 @@ export class IdbRepository implements Repository {
 
   async setSetting(key: string, value: unknown): Promise<void> {
     await this.db.put('settings', value, key)
+  }
+
+  async updateSettingAsOwner<T>(key: string, update: (current: T | undefined) => T, token: string | null): Promise<T> {
+    const tx = this.db.transaction('settings', 'readwrite')
+    const settings = tx.objectStore('settings')
+    const [owner, current] = await Promise.all([settings.get(SETTINGS.editorOwner) as Promise<EditorOwner | undefined>, settings.get(key) as Promise<T | undefined>])
+    if (owner && owner.token !== token) {
+      tx.abort()
+      await tx.done.catch(() => undefined)
+      throw new OwnershipError()
+    }
+    let next: T
+    try {
+      next = update(current)
+    } catch (err) {
+      tx.abort()
+      await tx.done.catch(() => undefined)
+      throw err
+    }
+    await Promise.all([settings.put(next, key), tx.done])
+    return next
   }
 
   async deleteSetting(key: string): Promise<void> {

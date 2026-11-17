@@ -2,6 +2,16 @@
 
 Prepared November 1, 2026. The full product specification is `MINTY_NOTES_PLAN.md`. This file explains how to begin a separate implementation session; it does not mean implementation has already started.
 
+## Current checkpoint — November 14, 2026
+
+Stage 5 (app 0.5.0) is implemented on `feature/stage-5-polish` from merged `main` at `6930901`, uncommitted for independent review and owner QA. The user authorized implementation only: no commit, push, merge, deploy or Stage 6. Read `PROGRESS.md` first for current results, risks and owner instructions; historical handoffs below are superseded by this checkpoint.
+
+Included: resizable/collapsible per-device navigation; Last edited/Manual project note ordering with accessible dragging/move controls; format 5 / IndexedDB 6 migrations and old backup/package compatibility; phone/focus/shortcuts/offline/update/storage guidance; explicit read-only session folder browsing; measured 50-project/1,000-note/1,000-task/~258-MiB benchmark and a narrow ZIP responsiveness fix. Detailed evidence lives in `STAGE5_PERFORMANCE.md` and current tests. Native picker/permissions, screen-reader/touch/OS and work-laptop performance still need owner QA. Existing PDF/export/privacy/ownership/backup-security boundaries are unchanged.
+
+Final automated results: `npm run check` passed (343 tests in 26 files); the complete production Chromium suite passed 54/54 (3.5 minutes, isolated port 4280); `git diff --check` passed. No final failures remain. File inventory is in STAGE5_REVIEW.md.
+
+Next action: independent review and manual QA. Preserve the intentional untracked AGENTS.md. Do not begin a new stage or publish Git changes without explicit user authorization.
+
 ## Give Claude Code these files
 
 Place `MINTY_NOTES_PLAN.md` and this handoff in a new, separate Minty Notes repository, or attach them where the coding environment can read them. The implementation environment needs these actual files; a link into the planning computer's local filesystem will not provide access.

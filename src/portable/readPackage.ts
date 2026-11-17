@@ -1,4 +1,4 @@
-import { BACKUP_FORMAT, Checker, isSafePath, sha256Hex, validateRecords } from '../backup/archive'
+import { BACKUP_FORMAT, Checker, isSafePath, migrateRecordsV4toV5, sha256Hex, validateRecords } from '../backup/archive'
 import { pageLinkIds } from '../domain/pageLink'
 import { FORMAT_VERSION, type CanvasObject } from '../domain/types'
 import { DOCX_MIME, PDF_MIME } from '../import/formats'
@@ -336,6 +336,7 @@ export async function readProjectPackage(bytes: Uint8Array): Promise<PackageVali
     objects: raw.objects,
     attachments: raw.attachments,
   }
+  if ((m.formatVersion as number) <= 4) migrateRecordsV4toV5(asWorkspace)
   const validated = validateRecords(asWorkspace, checker)
   if (!validated) return fail(...errors)
   const shaped: PackageRecords = { project: validated.projects[0], tasks: validated.tasks, categories: validated.categories, tags: validated.tags, pages: validated.pages, objects: validated.objects, attachments: validated.attachments, references: [] }

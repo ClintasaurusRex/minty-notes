@@ -1,18 +1,24 @@
 import { describeStorageError, SETTINGS } from '../storage/repository'
 import type { WorkspaceStore } from '../store/workspaceStore'
-import { buildArchive, type ArchiveValidation } from './archive'
+import { buildArchive, readArchive, type ArchiveValidation } from './archive'
 import {
-  SAFEGUARD_PREFIX,
   describeFolderError,
+  describeRetention,
+  FolderWriteError,
+  forgetInLedger,
   isFolderBackupSupported,
+  ledgerEntries,
   listSnapshots,
   pickFolder,
   pruneSnapshots,
   queryFolderPermission,
   readFolderFile,
+  recordInLedger,
   requestFolderPermission,
+  safeguardFileName,
   snapshotFileName,
   writeFolderFile,
+  type BackupLedger,
 } from './folder'
 
 export type FolderState = 'unsupported' | 'none' | 'granted' | 'prompt' | 'denied' | 'missing'
@@ -27,6 +33,12 @@ export interface BackupStatusRecord {
   /** Last downloaded backup (the browser cannot confirm the file was kept). */
   lastDownloadAt: string | null
   lastError: { at: string; message: string } | null
+  /**
+   * Since 0.5.0: set after a successful snapshot when the folder still holds more
+   * than `keep` snapshots because some could not be proven safe to delete.
+   * Missing in older status (treated as null).
+   */
+  cleanupWarning?: { at: string; message: string } | null
 }
 
 interface FolderRecord {
@@ -205,13 +217,24 @@ export class BackupService {
     }
   }
 
+  /**
+   * Only the window that owns editing (checked against the stored owner token)
+   * stores status; any other window would overwrite the editor's newer status
+   * with its own stale copy. Other windows still show the value in memory.
+   */
   private async saveStatus(status: BackupStatusRecord): Promise<void> {
     this.set({ status })
     try {
+      if (!(await this.ownsEditing())) return
       await this.repo.setSetting(SETTINGS.backupStatus, status)
     } catch {
       // Status is informational; the in-memory value is still shown.
     }
+  }
+
+  /** In-memory ownership first, then the stored owner token (stale `isOwner` is caught there). */
+  private async ownsEditing(): Promise<boolean> {
+    return this.store.isOwner && (await this.store.confirmOwnership())
   }
 
   private recordError(message: string): Promise<void> {
@@ -273,7 +296,11 @@ export class BackupService {
   async backupNow(): Promise<BackupResult> {
     if (this.state.running) return { ok: false, message: 'Another backup task is already running.' }
     if (!this.folder) return { ok: false, message: 'No backup folder is selected.' }
-    if (this.store.getState().readOnly) return { ok: false, message: 'Only the window that is editing writes folder backups.' }
+    const canWrite = () => this.store.isOwner && !this.store.getState().readOnly
+    // Folder writes and deletions are not record commits, so storage cannot fence
+    // them; each one first checks the stored owner token (the commit fence).
+    const confirmed = async () => canWrite() && (await this.store.confirmOwnership()) && canWrite()
+    if (!canWrite()) return { ok: false, message: 'Only the window that is editing writes folder backups.' }
     this.set({ running: 'backup' })
     try {
       const permission = await queryFolderPermission(this.folder.handle)
@@ -284,15 +311,52 @@ export class BackupService {
         return { ok: false, message }
       }
       const { bytes, at, revision } = await this.createArchive()
-      const fileName = await writeFolderFile(this.folder.handle, snapshotFileName(new Date(at)), bytes)
-      await pruneSnapshots(this.folder.handle, this.opts.keep, fileName)
+      // Only a complete, restorable archive may become a recovery point.
+      const check = await readArchive(bytes)
+      if (!check.ok) throw new Error(`The new backup failed its own check, so it was not written: ${check.errors.join(' ')}`)
+      if (!(await confirmed())) return { ok: false, message: 'Editing moved to another window while the backup was being prepared. No folder file was written.' }
+      const written = await writeFolderFile(this.folder.handle, snapshotFileName(new Date(at)), bytes)
+      const fileName = written.fileName
+      // A file write already in progress can finish safely. Keep that complete
+      // snapshot, but never prune or overwrite backup status after a takeover.
+      const stopped = { ok: false as const, message: 'A complete snapshot was written, but editing moved to another window. Further cleanup and backup status updates were stopped. Continue backups in the editing window.' }
+      if (!(await confirmed())) return stopped
+      // Recorded in the same transaction as the owner check; the ledger order never depends on clocks.
+      let ledger: BackupLedger
+      try {
+        ledger = await this.store.updateSettingAsOwner<BackupLedger>(SETTINGS.backupLedger, (current) => recordInLedger(current, { fileName, size: written.size, sha256: written.sha256, at, revision }))
+      } catch (err) {
+        if (err instanceof Error && err.name === 'OwnershipError') return stopped
+        throw err
+      }
+      const report = await pruneSnapshots(this.folder.handle, this.opts.keep, ledgerEntries(ledger), fileName, confirmed)
+      if (report.forget.length > 0) {
+        try {
+          await this.store.updateSettingAsOwner<BackupLedger>(SETTINGS.backupLedger, (current) => forgetInLedger(current, report.forget))
+        } catch (err) {
+          if (err instanceof Error && err.name === 'OwnershipError') return stopped
+          // A stale entry is harmless: its file is gone, so it is never counted or removed.
+        }
+      }
+      if (!(await confirmed())) return stopped
       this.lastBackupMono = this.opts.monotonicNow()
-      await this.saveStatus({ ...this.state.status, lastBackup: { at, fileName, revision }, lastError: null })
+      const warning = describeRetention(report, this.opts.keep)
+      await this.saveStatus({ ...this.state.status, lastBackup: { at, fileName, revision }, lastError: null, cleanupWarning: warning ? { at, message: warning } : null })
       return { ok: true, fileName }
     } catch (err) {
-      const message = err instanceof Error && err.message.startsWith('Recent changes') ? err.message : describeFolderError(err)
-      if (err instanceof DOMException && err.name === 'NotFoundError') this.set({ folderState: 'missing' })
-      if (err instanceof DOMException && err.name === 'NotAllowedError') this.set({ folderState: 'prompt' })
+      let message = err instanceof Error && (err.message.startsWith('Recent changes') || err.message.startsWith('The new backup failed')) ? err.message : describeFolderError(err)
+      if (err instanceof FolderWriteError) {
+        message += ` The file ${err.fileName} in the backup folder could not be confirmed as this backup. Minty Notes did not delete it and will never count it as a backup; check it before deleting it yourself.`
+      }
+      // After a takeover (e.g. the flush was refused, or a folder write failed)
+      // this window must not record the failure over the editor's status.
+      if (!(await confirmed().catch(() => false))) {
+        return { ok: false, message: `${message} Editing moved to another window, so this window did not change the backup status.` }
+      }
+      // A FolderWriteError keeps the browser's error name.
+      const folderError = err instanceof DOMException || err instanceof FolderWriteError ? err.name : ''
+      if (folderError === 'NotFoundError') this.set({ folderState: 'missing' })
+      if (folderError === 'NotAllowedError') this.set({ folderState: 'prompt' })
       await this.recordError(message)
       return { ok: false, message }
     } finally {
@@ -382,10 +446,10 @@ export class BackupService {
       const { bytes, at } = await this.createArchive().catch((err: unknown) => {
         throw new Error(`The current workspace could not be saved as a safety copy, so nothing was restored. ${err instanceof Error ? err.message : ''}`, { cause: err })
       })
-      const fileName = snapshotFileName(new Date(at), SAFEGUARD_PREFIX)
+      const fileName = safeguardFileName(new Date(at))
       let folderFileName: string | null = null
       if (this.folder && this.state.folderState === 'granted') {
-        folderFileName = await writeFolderFile(this.folder.handle, fileName, bytes).catch(() => null)
+        folderFileName = await writeFolderFile(this.folder.handle, fileName, bytes).then((w) => w.fileName, () => null)
       }
       const safeguard: SafeguardRecord = { createdAt: at, fileName, size: bytes.byteLength, blob: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'application/zip' }), folderFileName }
       try {

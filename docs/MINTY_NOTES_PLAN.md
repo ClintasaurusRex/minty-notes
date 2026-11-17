@@ -1,6 +1,6 @@
 # Minty Notes — project plan, version 1
 
-Status: planning specification, November 1, 2026. User preferences are recorded below; architectural and workflow defaults selected during planning are identified separately. This document is ready for a build handoff. Application implementation and deployment have not started.
+Status: original planning specification, November 1, 2026; Stage 5 implementation checkpoint November 14, 2026 (app 0.5.0, pending independent review and owner QA). User preferences are recorded below; architectural and workflow defaults selected during planning are identified separately. This document is ready for a build handoff. Stages 0–5 are implemented; nothing has been deployed. Stage 6 and later enhancement ideas remain future scope.
 
 ## Purpose
 
@@ -64,7 +64,7 @@ Notebook or section categories such as VTScada determine suggested references. T
 - Dropbox web link: opens the referenced resource in Dropbox.
 - Local path: visible and copyable, useful for opening a location through the operating system.
 
-An authorized local-folder browser is a later enhancement. Do not promise that arbitrary Windows paths will open directly from a webpage, or that industrial project files can be edited inside Minty Notes.
+The authorized local-folder browser was implemented read-only and session-only in Stage 5. Do not promise that arbitrary Windows paths will open directly from a webpage, or that industrial project files can be edited inside Minty Notes.
 
 ## Main screens
 
@@ -255,9 +255,9 @@ Divide this stage into independently checked slices: rich text and page links; i
 
 Refine shortcuts, responsive layouts, print/export behavior, performance on realistic datasets, and accessibility. Add authorized local-folder browsing if it remains useful. Phone layouts should help users navigate and read wide pages without rearranging the desktop layout.
 
-#### Stage 5 backlog requested by the user (recorded November 12, 2026 — not started, not designed)
+#### Stage 5 user requests (recorded November 12, implemented November 14, 2026)
 
-Two UI improvements the user asked for after the 0.4.2 manual QA. They are requirements to plan within Stage 5, which still needs approval; nothing here is implemented.
+The approved Stage 5 implementation includes both requests below, with Last edited retained as the default and Manual selected after a reorder. Width/collapse are per-device; sort/order are project data. Format 5 / DB 6 and legacy-package migration preserve recovery compatibility. See PROGRESS.md for tests and owner QA, ARCHITECTURE.md for decisions, DATA_FORMAT.md for migration details, and STAGE5_PERFORMANCE.md for measured scale. Optional folder browsing is read-only and session-only. No Stage 6 work is included.
 
 **Resizable and collapsible project navigation.** The project sidebar that holds Overview, Tasks, Files, Notes, and References should:
 
@@ -274,7 +274,7 @@ Two UI improvements the user asked for after the 0.4.2 manual QA. They are requi
 - keyboard-accessible reordering controls (as the task board has Alt+arrow moves), with the move announced;
 - the chosen order preserved through backup, restore, and portable project export/import.
 
-Notes for whoever plans it (from the 0.4.2 note-order investigation, see `ARCHITECTURE.md`, “Order of a project's notes”): today the list is “most recently edited first”, so a manual order needs a decision on how the two coexist (for example a per-project “sort by: manual / last edited” choice, with manual as the default once the user has dragged something). `Page.order` already exists, is already written for every project note, already travels in backups, and already keeps its relative sequence through project packages (export renumbers 1…n, import keeps that sequence) — so a manual order can probably reuse it without a new field; if a per-project sort choice is stored, that is a stored-record change (`FORMAT_VERSION` / `DB_VERSION` bump, migration, a migration step for older project packages, and tests). Reference copies that arrive with an imported project are notes of that project and need a defined place in a manual order (today: after the project's own notes).
+Historical design context (resolved by the Stage 5 implementation above; from the 0.4.2 note-order investigation, see `ARCHITECTURE.md`, “Order of a project's notes”): today the list is “most recently edited first”, so a manual order needs a decision on how the two coexist (for example a per-project “sort by: manual / last edited” choice, with manual as the default once the user has dragged something). `Page.order` already exists, is already written for every project note, already travels in backups, and already keeps its relative sequence through project packages (export renumbers 1…n, import keeps that sequence) — so a manual order can probably reuse it without a new field; if a per-project sort choice is stored, that is a stored-record change (`FORMAT_VERSION` / `DB_VERSION` bump, migration, a migration step for older project packages, and tests). Reference copies that arrive with an imported project are notes of that project and need a defined place in a manual order (today: after the project's own notes).
 
 ### Stage 6 — optional desktop packaging
 
